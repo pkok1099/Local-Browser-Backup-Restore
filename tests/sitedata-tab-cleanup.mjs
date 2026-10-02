@@ -89,6 +89,7 @@ function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCou
       group: async ({ tabIds, groupId }) => {
         const ids = Array.isArray(tabIds) ? tabIds : [tabIds]; // real Chrome accepts a single id too
         groupCalls.push({ tabIds: [...ids], groupId });
+        events.push(`group:${ids.join(',')}`);
         const gid = groupId ?? 42;
         for (const id of ids) { const t = tabsById.get(id); if (t) t.groupId = gid; }
         return gid;
@@ -100,6 +101,7 @@ function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCou
     },
     debugger: {
       attach: (target, version, cb) => {
+        events.push(`debugger:attach:${target.tabId}`);
         // failAttachTimes: fail the first N attaches, then succeed.
         if (attachFailsLeft > 0) {
           attachFailsLeft--;
@@ -109,11 +111,12 @@ function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCou
         }
         setTimeout(cb, attachDelayMs);
       },
-      detach: (target, cb) => { chrome.runtime.lastError = undefined; setTimeout(cb, 0); },
+      detach: (target, cb) => { events.push(`debugger:detach:${target.tabId}`); chrome.runtime.lastError = undefined; setTimeout(cb, 0); },
       sendCommand: (dbg, method, params, cb) => {
+        const expr = (params && params.expression) || '';
+        events.push(expr.includes('__BBR.setTx') ? `read:setTx:${dbg.tabId}` : expr.includes('__BBR.txChunk') ? `read:txChunk:${dbg.tabId}` : `debugger:command:${dbg.tabId}`);
         if (failEval) { chrome.runtime.lastError = { message: 'fake eval failed' }; setTimeout(() => cb(undefined), 0); return; }
         if (!readsSucceed) { chrome.runtime.lastError = { message: 'fake sendCommand denied' }; setTimeout(() => cb(undefined), 0); return; }
-        const expr = (params && params.expression) || '';
         chrome.runtime.lastError = undefined;
         if (expr.includes('__BBR.setTx')) {
           // evalJsonViaTx: first evaluate returns the payload length.
@@ -134,16 +137,17 @@ function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCou
       getTree: async () => [{ children: bookmarks }],
     },
     cookies: { getAllCookieStores: async () => [] },
-    scripting: { executeScript: async () => [] },
+    scripting: { executeScript: async () => { events.push('scripting:executeScript'); return []; } },
     storage: {
       local: {
-        get: async (key) => ({ [key]: storageData[key] }),
+        get: async (key) => { events.push(`storage:get:${key}`); return { [key]: storageData[key] }; },
         set: async (obj) => {
+          for (const key of Object.keys(obj)) events.push(`storage:set:${key}`);
           if (storageFailMode === 'quota') throw new Error('QUOTA_BYTES quota exceeded');
           if (storageFailMode === 'error') throw new Error('fake storage write failed');
           Object.assign(storageData, obj); storageWrites.push(Object.keys(obj));
         },
-        remove: async (key) => { delete storageData[key]; },
+        remove: async (key) => { events.push(`storage:remove:${key}`); delete storageData[key]; },
       },
     },
     runtime: { getURL: (p) => p, lastError: undefined },
@@ -607,6 +611,48 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   assert.equal(Object.keys(section2.origins || {}).length, 2, 'M2: data kept in memory despite quota');
   assert.deepEqual(fake2.listTabs().filter((t) => (t.url || '').includes('/__bbr_site_scan__')), [], 'M2: no scan tabs remain after quota halt');
   console.log('PASS scenario M2: quota-full — safe stop, clear warning, data kept');
+}
+
+// Scenario N: characterization — configured origin filtering/capping reaches
+// the collector, its section shape is stable, and the tab lifecycle remains
+// create → group → attach → read → detach → remove → final checkpoint write.
+{
+  const fake = makeFakeChrome({ originCount: 4, readsSucceed: true });
+  globalThis.chrome = fake.chrome;
+  const progress = [];
+  const section = await collectSiteData((message, fraction, stats) => progress.push({ message, fraction, stats }), {
+    includeOrigins: ['http://example0.com', 'http://example1.com', 'http://example2.com'],
+    excludeOrigins: ['http://example0.com'],
+    maxOrigins: 1,
+    scanWindowSize: 2,
+    retryMaxAttempts: 1,
+    fetchScript: false,
+    excludedSiteDataCategories: ['serviceWorkers'],
+  });
+  assert.deepEqual(Object.keys(section.origins), ['http://example1.com']);
+  assert.equal(section.schemaVersion, 1);
+  assert.equal(section.origins['http://example1.com'].localStorage.reuse_key, 'reuse_value');
+  assert.deepEqual(section.excludedCategories, ['serviceWorkers']);
+  assert.equal(section.urlStates.length, 1);
+  assert.equal(section.urlStates[0].status, 'saved');
+  assert.equal(section.urlStates[0].attempts, 1);
+  assert.ok(section.notes.some((note) => note.includes('capped at 1')));
+  assert.ok(progress.length > 0 && progress.every((item) => item.fraction === null || typeof item.fraction === 'number'));
+
+  const index = (prefix) => fake.events.findIndex((event) => event.startsWith(prefix));
+  const created = index('create:');
+  const grouped = index('group:');
+  const attached = index('debugger:attach:');
+  const readStart = index('read:setTx:');
+  const readChunk = index('read:txChunk:');
+  const detached = index('debugger:detach:');
+  const removed = index('remove:');
+  const checkpointWrite = index('storage:set:bbr:site-data-checkpoint');
+  const checkpointClear = index('storage:remove:bbr:site-data-checkpoint');
+  assert.ok(created < grouped && grouped < attached && attached < readStart && readStart < readChunk, 'tab is created/grouped/attached before snapshot reads');
+  assert.ok(readChunk < detached && detached < removed, 'snapshot is read before debugger detach and tab close');
+  assert.ok(removed < checkpointWrite && checkpointWrite < checkpointClear, 'checkpoint persists after scan-tab cleanup, then clears');
+  console.log('PASS scenario N: collectSiteData inputs, output contract, and side-effect order');
 }
 
 console.log('PASS siteData streaming pipeline: hard window, single group, takeover safety, adaptive CPU');
