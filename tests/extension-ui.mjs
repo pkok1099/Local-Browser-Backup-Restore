@@ -45,6 +45,44 @@ try {
     const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
 
+    // Route-only UI chunks must stay off the initial route and load on demand.
+    // Compare request sets instead of relying on generated chunk filenames.
+    const extensionPrefix = `chrome-extension://${extensionId}/`;
+    const dashboardScripts = [];
+    page.on('request', (request) => {
+      if (request.resourceType() === 'script' && request.url().startsWith(extensionPrefix)) {
+        dashboardScripts.push(request.url());
+      }
+    });
+    await page.goto(`chrome-extension://${extensionId}/dashboard.html#/ringkasan`);
+    await page.locator('#local-backup').waitFor();
+    await page.waitForFunction(() => typeof window.__api === 'object');
+    await page.evaluate(() => { window.__dashboardApiRef = window.__api; });
+    const initialScripts = new Set(dashboardScripts);
+    assert.ok(initialScripts.size > 0, 'dashboard entry script should load on the initial route');
+
+    const visitLazyRoute = async (hash, ready, label) => {
+      const before = new Set(dashboardScripts);
+      const chunkRequest = page.waitForRequest(
+        (request) => request.resourceType() === 'script' && request.url().startsWith(extensionPrefix) && !before.has(request.url()),
+        { timeout: 10000 }
+      );
+      await page.locator(`a[href="${hash}"]`).click();
+      await chunkRequest;
+      await ready();
+      const after = new Set(dashboardScripts);
+      assert.ok(after.size > before.size, `${label} route should request a deferred script after navigation`);
+    };
+    await visitLazyRoute('#/pengaturan', () => page.waitForFunction(() => document.body.textContent.includes('Website data — retry')), 'Pengaturan');
+    await visitLazyRoute('#/hasil', () => page.locator('main').getByText('Hasil situs', { exact: true }).waitFor(), 'Hasil');
+    await visitLazyRoute('#/kegagalan', () => page.locator('main').getByText('Kegagalan', { exact: true }).waitFor(), 'Kegagalan');
+    await visitLazyRoute('#/lainnya', () => page.locator('#cloud-only-backup').waitFor(), 'Lainnya');
+    await page.locator('[data-toaster-ready]').waitFor({ state: 'attached', timeout: 10000 });
+    await visitLazyRoute('#/log', () => page.waitForFunction(() => document.querySelector('#log')?.textContent.includes('dashboard ready'), null, { timeout: 15000 }), 'Log');
+    assert.equal(await page.evaluate(() => window.__api === window.__dashboardApiRef), true, 'synchronous startup API hook should survive hash navigation');
+    await page.evaluate(() => { delete window.__dashboardApiRef; });
+    console.log('PASS deferred route chunks: all five noninitial routes load only on navigation; startup API preserved');
+
     // Mobile layout on the live page: no horizontal overflow, 44px targets.
     for (const width of [360, 390]) {
       await page.setViewportSize({ width, height: 844 });
@@ -182,6 +220,7 @@ try {
     assert.equal(await page.locator('#section-restore').isVisible(), true, 'restore action should reveal the file flow');
     await page.goto(`chrome-extension://${extensionId}/dashboard.html#/ringkasan`);
     await page.locator('#local-backup-encrypted').click();
+    await page.locator('#section-password').waitFor({ state: 'visible', timeout: 10000 });
     assert.equal(await page.locator('#section-password').isVisible(), true, 'encrypted backup action should open its password form');
 
     assert.deepEqual(pageErrors, [], `extension dashboard should run without page errors: ${pageErrors.join('; ')}`);

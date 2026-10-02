@@ -3,7 +3,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { useApp } from '@/dashboard/store';
-import { requestBackupStop } from '@/dashboard/logic';
 
 export function BackupProgressCard() {
   const state = useApp();
@@ -17,7 +16,12 @@ export function BackupProgressCard() {
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="text-[15px]">Creating backup</CardTitle>
         {backup.running && (
-          <Button variant="destructive" size="sm" onClick={() => requestBackupStop()} disabled={isStopping}>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => void import('@/dashboard/logic').then(({ requestBackupStop }) => requestBackupStop())}
+            disabled={isStopping}
+          >
             {isStopping ? 'Membersihkan…' : 'Stop'}
           </Button>
         )}

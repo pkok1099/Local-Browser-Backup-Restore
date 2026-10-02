@@ -59,6 +59,13 @@ try {
     { timeout: 15000 }
   );
 
+  // Warm the lazy route before the crawl so the E2E measures crawl continuity,
+  // not the first-download latency of that route chunk.
+  await page.locator('a[href="#/hasil"]').click();
+  await page.locator('main').getByText('Hasil situs', { exact: true }).waitFor();
+  await page.locator('a[href="#/ringkasan"]').click();
+  await page.locator('#local-backup').waitFor();
+
   const expr = `
 (async () => {
   window.__e2eProgress = [];
@@ -86,6 +93,7 @@ try {
   let settled = false;
   let maxGroupTabs = 0;
   let maxScanGroups = 0;
+  let navigatedDuringScan = false;
   pending.then(() => { settled = true; }, () => { settled = true; });
   while (!settled) {
     const info = await page.evaluate((title) => chrome.tabGroups.query({}).then(async (gs) => {
@@ -98,10 +106,28 @@ try {
       sawGroup = true;
       maxGroupTabs = Math.max(maxGroupTabs, info.tabs);
       maxScanGroups = Math.max(maxScanGroups, info.scanGroups);
+      if (!navigatedDuringScan) {
+        await page.evaluate(() => {
+          window.__sitedataRouteMarker = 'same-dashboard-document';
+          window.__sitedataApiRef = window.__api;
+          window.location.hash = '#/hasil';
+        });
+        await page.waitForFunction(() => document.querySelector('main')?.textContent.includes('Hasil situs'), null, { timeout: 10000 });
+        assert.equal(await page.evaluate(() => window.location.hash), '#/hasil', 'hash navigation should select Hasil while the crawl is active');
+        assert.equal(await page.evaluate(() => window.__sitedataRouteMarker), 'same-dashboard-document', 'route navigation should keep the same dashboard document alive');
+        assert.equal(await page.evaluate(() => window.__api === window.__sitedataApiRef), true, 'startup API should remain registered during the crawl');
+        assert.equal(settled, false, 'site-data crawl should still be running after hash navigation');
+        navigatedDuringScan = true;
+      }
     }
     await new Promise((r) => setTimeout(r, 50));
   }
   const v = must(await pending, 'collectAll siteData');
+  assert.equal(navigatedDuringScan, true, 'dashboard should navigate while a site-data scan is active');
+  await page.evaluate(() => {
+    delete window.__sitedataRouteMarker;
+    delete window.__sitedataApiRef;
+  });
 
   // ---- 1) tab group observed during the scan; hard window respected ----
   assert.equal(sawGroup, true, 'scan tabs should be grouped under "' + GROUP_TITLE + '" while reading');

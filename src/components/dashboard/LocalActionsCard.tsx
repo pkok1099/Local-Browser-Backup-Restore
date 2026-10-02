@@ -2,7 +2,6 @@ import { HardDriveDownload, Undo2, Activity } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { appendLog, patchState } from '@/dashboard/store';
-import { doBackup, askPassword, showCapabilities } from '@/dashboard/logic';
 
 export function LocalActionsCard() {
   return (
@@ -15,12 +14,16 @@ export function LocalActionsCard() {
         <CardDescription>Backup files stay on this device unless you choose a cloud provider below.</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-wrap gap-2">
-        <Button id="local-backup" onClick={() => void doBackup({ encrypt: false })}>
+        <Button
+          id="local-backup"
+          onClick={() => void import('@/dashboard/logic').then(({ doBackup }) => doBackup({ encrypt: false }))}
+        >
           Local only — plain
         </Button>
         <Button
           id="local-backup-encrypted"
           onClick={async () => {
+            const { askPassword, doBackup } = await import('@/dashboard/logic');
             const password = await askPassword('new');
             if (password) await doBackup({ encrypt: true, password });
           }}
@@ -45,7 +48,7 @@ export function LocalActionsCard() {
           variant="outline"
           onClick={() => {
             window.location.hash = '#/lainnya'; // CapabilitiesCard lives on the Lainnya page
-            void showCapabilities();
+            void import('@/dashboard/logic').then(({ showCapabilities }) => showCapabilities());
           }}
         >
           <Activity className="size-4" />
