@@ -127,7 +127,7 @@ function capabilityDetail(value: unknown): CapabilityDetail {
 
 // ---------------- metadata ----------------
 
-export function generatorInfo() {
+function generatorInfo() {
   return {
     name: 'Local Browser Backup & Restore',
     extensionVersion: chrome.runtime.getManifest().version,
@@ -591,7 +591,7 @@ export function closePassword(result: string | null) {
   }
 }
 
-export function setPasswordError(error: string) {
+function setPasswordError(error: string) {
   setState((s) => ({ password: { ...s.password, error } }));
 }
 
@@ -613,7 +613,7 @@ export function submitPassword(p1: string, p2: string): boolean {
 
 // ---------------- restore pipeline (UI) ----------------
 
-export const CATEGORY_LABELS: Record<string, string> = {
+const CATEGORY_LABELS: Record<string, string> = {
   bookmarks: 'Bookmarks',
   history: 'History',
   tabsWindows: 'Tabs & windows',
@@ -885,9 +885,3 @@ export async function showCapabilities() {
     patchState('caps', (c) => ({ ...c, probes: 'probe error: ' + errMessage(e) }));
   }
 }
-
-// re-export so cloud-ui/init and components can share the same logger
-export { appendLog, getState as appState };
-export const errText = errMessage;
-export const errOf = errCode;
-export type { TypedError };

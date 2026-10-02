@@ -1,9 +1,9 @@
 // @ts-nocheck -- Dashboard UI predates strict mode; needs dedicated refactoring pass. Tracked as tech debt.
 import { SITE_DATA_CONFIG } from '@/lib/sitedata';
 
-export const BACKUP_CATEGORY_STORAGE_KEY = 'bbr:backup-categories';
-export const SITE_DATA_INCLUDED_ORIGINS_KEY = 'bbr:site-data-included-origins';
-export const SITE_DATA_SCAN_WINDOW_KEY = 'bbr:site-data-scan-window';
+const BACKUP_CATEGORY_STORAGE_KEY = 'bbr:backup-categories';
+const SITE_DATA_INCLUDED_ORIGINS_KEY = 'bbr:site-data-included-origins';
+const SITE_DATA_SCAN_WINDOW_KEY = 'bbr:site-data-scan-window';
 // Hard cap on simultaneously open scan tabs during website-data collection.
 // Single source of truth: SITE_DATA_CONFIG in lib/sitedata.js.
 export const SITE_DATA_SCAN_WINDOW_DEFAULT = SITE_DATA_CONFIG.window.default;
@@ -31,13 +31,13 @@ export async function saveSiteDataScanWindow(n: number): Promise<void> {
 
 // Additional user-safe tunables (dashboard Pengaturan page). Bounds keep the
 // crawl safe: attempts 1-5, read timeout 15-180s, checkpoint every 5-50.
-export const SITE_DATA_TUNING_KEY = 'bbr:site-data-tuning';
+const SITE_DATA_TUNING_KEY = 'bbr:site-data-tuning';
 export type SiteDataTuning = {
   retryMaxAttempts: number;
   readTimeoutMs: number;
   checkpointEveryOrigins: number;
 };
-export const SITE_DATA_TUNING_DEFAULT: SiteDataTuning = {
+const SITE_DATA_TUNING_DEFAULT: SiteDataTuning = {
   retryMaxAttempts: SITE_DATA_CONFIG.retry.maxAttempts,
   readTimeoutMs: SITE_DATA_CONFIG.retry.readTimeoutMs,
   checkpointEveryOrigins: SITE_DATA_CONFIG.checkpointEveryOrigins,
@@ -144,7 +144,7 @@ export type SiteDataInclude = {
   sessionStorage: boolean;
   serviceWorkers: boolean;
 };
-export const SITE_DATA_INCLUDE_DEFAULT: SiteDataInclude = {
+const SITE_DATA_INCLUDE_DEFAULT: SiteDataInclude = {
   sessionStorage: false,
   serviceWorkers: false,
 };

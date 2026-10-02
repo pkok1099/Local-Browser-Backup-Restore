@@ -1,7 +1,7 @@
 import { normalizeCloudConfig } from './cloud.js';
 
-export const SETTINGS_FORMAT = 'browser-backup-settings';
-export const SETTINGS_VERSION = 1;
+const SETTINGS_FORMAT = 'browser-backup-settings';
+const SETTINGS_VERSION = 1;
 
 export function buildSettingsExport(rawConfig) {
   const cfg = normalizeCloudConfig(rawConfig);

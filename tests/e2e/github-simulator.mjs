@@ -31,10 +31,6 @@ export function gitBlobSha1(bytes) {
   return createHash('sha1').update(Buffer.concat([header, buf])).digest('hex');
 }
 
-export function sha256HexText(text) {
-  return createHash('sha256').update(text, 'utf8').digest('hex');
-}
-
 export function createGitHubSimulator({ owner = 'e2e', repo = 'vault', isPublic = false, defaultBranch = 'main' } = {}) {
   const files = new Map(); // relPath -> Buffer
   const audit = [];

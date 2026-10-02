@@ -630,7 +630,7 @@ async function restoreSiteData(data, opts, progress) {
 
 // ---------- orchestrator ----------
 
-export const RESTORE_PLAN = [
+const RESTORE_PLAN = [
   ['bookmarks', restoreBookmarks],
   ['history', restoreHistory],
   ['tabsWindows', restoreTabsWindows],

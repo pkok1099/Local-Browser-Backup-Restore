@@ -2,7 +2,7 @@
 // via opts.onLogEntry) plus entries loaded from IndexedDB. Single shared
 // state for the Log page — no duplication.
 import { useSyncExternalStore } from 'react';
-import { querySiteLog, formatLogTs, LOG_LEVELS, LOG_CATEGORIES } from '@/lib/site-log';
+import { querySiteLog, formatLogTs } from '@/lib/site-log';
 
 export type SiteLogEntry = {
   seq: number;
@@ -32,7 +32,7 @@ export function pushSiteLogEntry(entry: SiteLogEntry) {
   emit();
 }
 
-export function isUnseenSiteLogError(): boolean {
+function isUnseenSiteLogError(): boolean {
   return unseenError;
 }
 
@@ -46,11 +46,11 @@ export function clearSiteLogView() {
   emit();
 }
 
-export function getSiteLogEntries(): SiteLogEntry[] {
+function getSiteLogEntries(): SiteLogEntry[] {
   return entries;
 }
 
-export function subscribeSiteLog(l: () => void) {
+function subscribeSiteLog(l: () => void) {
   listeners.add(l);
   return () => {
     listeners.delete(l);
@@ -77,7 +77,7 @@ export async function loadPersistedSiteLog(limit = 500): Promise<SiteLogEntry[]>
   return entries;
 }
 
-export { formatLogTs, LOG_LEVELS, LOG_CATEGORIES };
+export { formatLogTs };
 
 export const LEVEL_COLORS: Record<string, string> = {
   DEBUG: 'text-muted-foreground',

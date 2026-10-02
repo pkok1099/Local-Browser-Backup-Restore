@@ -64,7 +64,7 @@ let savedToken = ''; // kept in memory only to avoid re-typing; stored in chrome
 
 // ---------------- config <-> form ----------------
 
-export function cloudConfigFromForm() {
+function cloudConfigFromForm() {
   const form = getState().cloud.form;
   const t = (form.time || '12:00').split(':');
   return {
@@ -99,7 +99,7 @@ function notifyScheduleCheck() {
 
 // ---------------- status refresh ----------------
 
-export async function refreshCloudUI() {
+async function refreshCloudUI() {
   const info: any = await getCloudInfo();
   const phase = info.cloudState.phase || 'ready';
   const detail = info.cloudState.detail || '';
@@ -345,7 +345,7 @@ export async function onCloudDeletePick(id: string) {
 
 // ---------------- scheduled / retry runs ----------------
 
-export async function runScheduledCloudBackup(reason: string) {
+async function runScheduledCloudBackup(reason: string) {
   patchState('cloud', (c) => ({ ...c, progress: { visible: true, frac: 0.05 } }));
   appendLog(`scheduled cloud backup starting (${reason})`);
   patchState('cloud', (c) => ({ ...c, status: 'Backing up (scheduled)…' }));
@@ -380,7 +380,7 @@ export async function runScheduledCloudBackup(reason: string) {
   await refreshCloudUI();
 }
 
-export async function runAutomaticCloudRetry() {
+async function runAutomaticCloudRetry() {
   patchState('cloud', (c) => ({
     ...c,
     progress: { visible: true, frac: 0.05 },
@@ -515,7 +515,7 @@ export async function onAutoRetryChange(autoRetryCloud: boolean) {
 
 // ---------------- boot ----------------
 
-export async function loadCloudConfigIntoUI() {
+async function loadCloudConfigIntoUI() {
   const cfg: any = await loadCloudConfig();
   updateForm({
     provider: cfg.provider,
@@ -570,5 +570,3 @@ export async function init() {
   appendLog('dashboard ready');
   await autoStart();
 }
-
-export { isConfigured };
