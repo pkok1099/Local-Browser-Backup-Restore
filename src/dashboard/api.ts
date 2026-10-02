@@ -21,7 +21,7 @@ import {
 } from '@/lib/cloud';
 import { isBackupDue, loadSchedulerState, saveSchedulerState } from '@/lib/scheduler';
 import { appendLog } from './store';
-import { buildBackupObject, doBackup } from './logic';
+import { buildBackupObject, buildCloudBackupObject, doBackup } from './logic';
 
 const w = window as unknown as Record<string, unknown>;
 
@@ -92,7 +92,7 @@ export function installTestHooks() {
       } = {}) => {
         await loadCloudConfig(); // cfg unused
         return runCloudBackup({
-          collectBackup: buildBackupObject,
+          collectBackup: buildCloudBackupObject,
           onProgress: (m: string) => appendLog(`cloud: ${m}`),
           password,
           plaintextAck,
@@ -150,7 +150,7 @@ export function installTestHooks() {
         const decision = isBackupDue(cfg.schedule, st, now ? new Date(now) : new Date());
         if (!decision.due) return { ran: false, ...decision };
         const result = await runCloudBackup({
-          collectBackup: buildBackupObject,
+          collectBackup: buildCloudBackupObject,
           onProgress: (m: string) => appendLog(`scheduled: ${m}`),
           password,
           useSessionPassword: !password,

@@ -238,6 +238,14 @@ export async function buildBackupObject(
   return { backup, categoryStatus };
 }
 
+export async function buildCloudBackupObject(
+  onProgress?: (message: string) => void,
+  collectOptions?: CollectOptions | null
+): Promise<BackupObject> {
+  const { backup } = await buildBackupObject(onProgress, collectOptions);
+  return backup;
+}
+
 export async function saveTextFile(text: string, name: string) {
   const blob = new Blob([text], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
