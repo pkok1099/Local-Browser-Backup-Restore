@@ -1,5 +1,6 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { Component, lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { appendLog, setState, useApp } from '@/dashboard/store';
+import { loadRouteChunk, retryRouteChunk } from '@/dashboard/lazy-route';
 import { loadTheme, useResolvedTheme, watchSystemTheme } from '@/dashboard/theme';
 import { Header } from '@/components/dashboard/Header';
 import { SummaryPage } from '@/components/dashboard/pages';
@@ -8,11 +9,37 @@ const Toaster = lazy(() => import('@/components/ui/sonner').then((module) => ({ 
 const PasswordDialog = lazy(() =>
   import('@/components/dashboard/PasswordDialog').then((module) => ({ default: module.PasswordDialog }))
 );
-const SettingsPage = lazy(() => import('@/components/dashboard/SettingsPage'));
-const ResultsPage = lazy(() => import('@/components/dashboard/ResultsPage'));
-const FailuresPage = lazy(() => import('@/components/dashboard/FailuresPage'));
-const LogPage = lazy(() => import('@/components/dashboard/LogPage'));
-const MorePage = lazy(() => import('@/components/dashboard/MorePage'));
+const SettingsPage = lazy(() => loadRouteChunk('pengaturan', () => import('@/components/dashboard/SettingsPage')));
+const ResultsPage = lazy(() => loadRouteChunk('hasil', () => import('@/components/dashboard/ResultsPage')));
+const FailuresPage = lazy(() => loadRouteChunk('kegagalan', () => import('@/components/dashboard/FailuresPage')));
+const LogPage = lazy(() => loadRouteChunk('log', () => import('@/components/dashboard/LogPage')));
+const MorePage = lazy(() => loadRouteChunk('lainnya', () => import('@/components/dashboard/MorePage')));
+
+class RouteChunkErrorBoundary extends Component<{ route: string; children: ReactNode }, { failed: boolean }> {
+  override state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  override render() {
+    if (this.state.failed) {
+      return (
+        <div role="alert" className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+          <p>Halaman gagal dimuat. Dashboard sudah mencoba memuat ulang satu kali.</p>
+          <button
+            type="button"
+            className="mt-3 min-h-11 rounded-md bg-primary px-4 py-2 font-medium text-primary-foreground"
+            onClick={() => retryRouteChunk(this.props.route)}
+          >
+            Muat ulang dan coba lagi
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // Hash routing on a SINGLE extension page: changing location.hash never
 // reloads the page, so the crawl engine (Worker 1, Worker 2, load/CPU
@@ -63,12 +90,6 @@ export default function App() {
     if (route === 'lainnya' || state.backup.running) setToasterReady(true);
   }, [route, state.backup.running]);
 
-  useEffect(() => {
-    if (toasterReady) return;
-    const timer = window.setTimeout(() => setToasterReady(true), 1500);
-    return () => window.clearTimeout(timer);
-  }, [toasterReady]);
-
   const failCount =
     state.backup.siteScan?.urlStates.filter((u) => u.status === 'fetch-failed' || u.status === 'save-failed').length ??
     0;
@@ -98,24 +119,26 @@ export default function App() {
         </div>
       </nav>
       <main className="mx-auto flex w-full max-w-[880px] flex-col gap-3.5 px-4 py-4 max-sm:px-2.5">
-        <Suspense
-          fallback={
-            <div
-              role="status"
-              aria-live="polite"
-              className="rounded-lg border bg-card p-4 text-sm text-muted-foreground"
-            >
-              Memuat halaman…
-            </div>
-          }
-        >
-          {route === 'ringkasan' && <SummaryPage />}
-          {route === 'pengaturan' && <SettingsPage />}
-          {route === 'hasil' && <ResultsPage />}
-          {route === 'kegagalan' && <FailuresPage />}
-          {route === 'log' && <LogPage />}
-          {route === 'lainnya' && <MorePage />}
-        </Suspense>
+        <RouteChunkErrorBoundary key={route} route={route}>
+          <Suspense
+            fallback={
+              <div
+                role="status"
+                aria-live="polite"
+                className="rounded-lg border bg-card p-4 text-sm text-muted-foreground"
+              >
+                Memuat halaman…
+              </div>
+            }
+          >
+            {route === 'ringkasan' && <SummaryPage />}
+            {route === 'pengaturan' && <SettingsPage />}
+            {route === 'hasil' && <ResultsPage />}
+            {route === 'kegagalan' && <FailuresPage />}
+            {route === 'log' && <LogPage />}
+            {route === 'lainnya' && <MorePage />}
+          </Suspense>
+        </RouteChunkErrorBoundary>
         {state.password.open && (
           <Suspense fallback={null}>
             <PasswordDialog />
