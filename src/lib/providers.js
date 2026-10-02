@@ -2,9 +2,7 @@
 //
 //   StorageProvider (abstract contract)
 //   ├── LocalStorageProvider        functional (chrome.storage.local durable copy)
-//   ├── GitHubStorageProvider       functional  — see lib/github.js
-//   ├── WebDAVStorageProvider       PLACEHOLDER (reports not implemented; no network code)
-//   └── GoogleDriveStorageProvider  PLACEHOLDER (reports not implemented; no network code)
+//   └── GitHubStorageProvider       functional  — see lib/github.js
 //
 // Contract (simplest practical interface). Providers operate on the FINAL
 // backup artifact (see lib/artifact.js) — never on browser data:
@@ -175,47 +173,5 @@ export class LocalStorageProvider extends StorageProvider {
     } catch (e) {
       return { ok: false, error: e.message };
     }
-  }
-}
-
-// ---------------- placeholders ----------------
-
-export class WebDAVStorageProvider extends StorageProvider {
-  static get id() {
-    return 'webdav';
-  }
-  constructor() {
-    super();
-    throw new TypedError(
-      'ERR_PROVIDER_NOT_IMPLEMENTED',
-      'WebDAV provider is a placeholder and is not implemented yet. No WebDAV networking exists in this build.'
-    );
-  }
-}
-
-export class GoogleDriveStorageProvider extends StorageProvider {
-  static get id() {
-    return 'gdrive';
-  }
-  constructor() {
-    super();
-    throw new TypedError(
-      'ERR_PROVIDER_NOT_IMPLEMENTED',
-      'Google Drive provider is a placeholder and is not implemented yet. No Google Drive networking or OAuth exists in this build.'
-    );
-  }
-}
-
-export function createProvider(providerId) {
-  switch (providerId) {
-    case 'local':
-      return new LocalStorageProvider();
-    case 'github':
-      return null; // imported lazily by cloud.js to avoid a hard dependency cycle
-    case 'webdav':
-    case 'gdrive':
-      throw new TypedError('ERR_PROVIDER_NOT_IMPLEMENTED', `Provider "${providerId}" is not implemented yet.`);
-    default:
-      throw new TypedError('ERR_UNKNOWN_PROVIDER', `Unknown provider "${providerId}".`);
   }
 }

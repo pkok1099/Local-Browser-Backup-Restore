@@ -7,14 +7,14 @@
 import { sha256Hex, TypedError } from './util.js';
 import { FORMAT_ID, ENCRYPTED_FORMAT_ID, FORMAT_VERSION } from './format.js';
 
-export const ARTIFACT_EXT = '.bbr';
-export const REMOTE_MANIFEST_ID = 'browser-backup-remote-manifest';
-export const REMOTE_MANIFEST_VERSION = 1;
+const ARTIFACT_EXT = '.bbr';
+const REMOTE_MANIFEST_ID = 'browser-backup-remote-manifest';
+const REMOTE_MANIFEST_VERSION = 1;
 export const ENCRYPTION_VERSION = 1; // encryption scheme version, independent of the backup format version
 
 // Filenames carry ONLY a timestamp and a random id — never URLs, titles,
 // domains, cookie values or any other browser-derived content.
-export function makeBackupId(now = new Date()) {
+function makeBackupId(now = new Date()) {
   const p = (n) => String(n).padStart(2, '0');
   const stamp =
     `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}` +
@@ -26,7 +26,7 @@ export function makeBackupId(now = new Date()) {
   return `${stamp}-${hex}`;
 }
 
-export function artifactFilename(backupId) {
+function artifactFilename(backupId) {
   return `backup-${backupId}${ARTIFACT_EXT}`;
 }
 

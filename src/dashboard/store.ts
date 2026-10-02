@@ -21,13 +21,13 @@ export type RestoreRow = {
   note?: string;
 };
 
-export type RestoreOptions = {
+type RestoreOptions = {
   bm: boolean; // bookmarks replace (destructive)
   sd: boolean; // site data replace (destructive)
   dl: boolean; // downloads redownload
 };
 
-export type RestoreSummary = {
+type RestoreSummary = {
   rows: RestoreRow[];
   encryptedNote: string | null;
   warnings: string[];

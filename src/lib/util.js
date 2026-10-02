@@ -41,7 +41,7 @@ export function canonicalize(value) {
   return out + '}';
 }
 
-export function bytesToHex(bytes) {
+function bytesToHex(bytes) {
   let out = '';
   for (const b of bytes) out += b.toString(16).padStart(2, '0');
   return out;
@@ -79,10 +79,6 @@ export async function gzipDecompress(u8) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-export function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 // Yield to the event loop / renderer so the dashboard stays responsive and
 // long operations do not freeze the UI thread.
 // IMPORTANT: requestAnimationFrame NEVER fires in a backgrounded/hidden tab
@@ -104,12 +100,4 @@ export function errMessage(e) {
 
 export function errCode(e) {
   return (e && e.code) || 'UNKNOWN_ERROR';
-}
-
-// Logging helpers that never print cookie values, credentials or secrets.
-// Only structural identifiers (names/domains/counts) are ever logged.
-// (Crawl logging goes through src/lib/site-log.js; this helper is retired.)
-export function truncate(str, max = 100) {
-  if (typeof str !== 'string') return str;
-  return str.length > max ? str.slice(0, max - 1) + '\u2026' : str;
 }

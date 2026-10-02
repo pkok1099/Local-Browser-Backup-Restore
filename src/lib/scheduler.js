@@ -10,12 +10,10 @@
 // SUCCESSFUL backup (not the last attempt) so a failure retries (with backoff)
 // but a success never duplicates.
 
-import { TypedError } from './util.js';
-
 export const SCHEDULE_CHECK_ALARM = 'bbr-schedule-check';
 export const CLOUD_RETRY_ALARM = 'bbr-cloud-upload-retry';
 export const ALARM_PERIOD_MINUTES = 15;
-export const CLOUD_RETRY_BASE_MS = 60 * 1000;
+const CLOUD_RETRY_BASE_MS = 60 * 1000;
 export const CLOUD_RETRY_MAX_ATTEMPTS = 8;
 
 export function cloudRetryDelayMs(retryCount) {
@@ -25,7 +23,7 @@ export function cloudRetryDelayMs(retryCount) {
 
 // After a failed attempt, wait this long before retrying (prevents hammering
 // while the browser is open all day with a broken config).
-export const RETRY_BACKOFF_MS = 10 * 60 * 1000;
+const RETRY_BACKOFF_MS = 10 * 60 * 1000;
 
 export function normalizeScheduleConfig(raw) {
   const c = raw || {};
@@ -47,7 +45,7 @@ export function normalizeScheduleConfig(raw) {
 }
 
 // The Date of today's scheduled time, in local time.
-export function scheduledTimeToday(hour, minute, now) {
+function scheduledTimeToday(hour, minute, now) {
   const d = new Date(now);
   d.setHours(hour, minute, 0, 0);
   return d;
@@ -85,9 +83,9 @@ export function isBackupDue(config, state, now) {
 
 // ---------------- chrome.storage-backed helpers ----------------
 
-export const SCHEDULER_STATE_KEY = 'bbr:scheduler-state';
+const SCHEDULER_STATE_KEY = 'bbr:scheduler-state';
 
-export function emptySchedulerState() {
+function emptySchedulerState() {
   return {
     lastAttempt: null,
     lastAttemptTrigger: null,
@@ -116,10 +114,4 @@ export function isLocked(state) {
   const since = new Date(state.runningSince);
   if (isNaN(since)) return false;
   return Date.now() - since.getTime() < 30 * 60 * 1000; // stale locks expire after 30 min
-}
-
-export function assertScheduleTime(hour, minute) {
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
-    throw new TypedError('ERR_MALFORMED', 'Schedule time must be hour 0-23 and minute 0-59.');
-  }
 }

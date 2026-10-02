@@ -419,7 +419,7 @@ async function collectProfile() {
 
 // ---------- orchestrator ----------
 
-export const COLLECTORS = [
+const COLLECTORS = [
   ['bookmarks', collectBookmarks],
   ['history', collectHistory],
   ['tabsWindows', collectTabsWindows],

@@ -14,7 +14,7 @@ export const SUPPORTED_FORMAT_VERSIONS = [1, 2];
 // Schema version of each data category, so a restore engine can tell whether a
 // given section's internal shape is understood, independently of the overall
 // format version.
-export const CATEGORY_SCHEMA_VERSIONS = Object.freeze({
+const CATEGORY_SCHEMA_VERSIONS = Object.freeze({
   bookmarks: 1,
   history: 1,
   tabsWindows: 1,
