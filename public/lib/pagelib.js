@@ -766,33 +766,53 @@
   // opts: { fetchScript: bool, opfs: bool, buckets: bool, sessionStorage: bool, serviceWorkers: bool }
   // sessionStorage and serviceWorkers default to true; set false to skip
   // capture entirely (they are not reliably restorable — see restoreSiteData).
+  function recordCategoryReadFailure(out, category, error) {
+    out.errors = out.errors || [];
+    out.errors.push(`${category}: ${String(error?.message ?? error)}`);
+  }
+  function captureSyncCategory(out, category, read, fallback) {
+    try { out[category] = read(); }
+    catch (error) { out[category] = fallback; recordCategoryReadFailure(out, category, error); }
+  }
+  async function captureAsyncCategory(out, category, read, fallback, reportFailure = true) {
+    try { out[category] = await read(); }
+    catch (error) {
+      out[category] = typeof fallback === 'function' ? fallback(error) : fallback;
+      if (reportFailure) recordCategoryReadFailure(out, category, error);
+    }
+  }
+  function readLocalStorageCategory(out) { captureSyncCategory(out, 'localStorage', readLS, {}); }
+  function readSessionStorageCategory(out, opts) {
+    if (opts.sessionStorage === false) { out.sessionStorage = {}; out.skipped = (out.skipped || []).concat('sessionStorage'); return; }
+    captureSyncCategory(out, 'sessionStorage', readSS, {});
+  }
+  async function readIndexedDBCategory(out) { await captureAsyncCategory(out, 'indexedDB', () => readIDB(indexedDB), []); }
+  async function readCacheStorageCategory(out) { await captureAsyncCategory(out, 'cacheStorage', () => readCacheStorage(caches), []); }
+  async function readServiceWorkerCategory(out, opts) {
+    if (opts.serviceWorkers === false) { out.serviceWorkers = []; out.skipped = (out.skipped || []).concat('serviceWorkers'); return; }
+    await captureAsyncCategory(out, 'serviceWorkers', () => readSWs(!!opts.fetchScript), []);
+  }
+  async function readOPFSCategory(out, opts) {
+    if (opts.opfs === false || !navigator.storage || !navigator.storage.getDirectory) return;
+    await captureAsyncCategory(out, 'opfs', async () => readOPFS(await navigator.storage.getDirectory()),
+      (error) => ({ error: String(error), files: [], dirs: [] }), false);
+  }
+  async function readBucketsCategory(out, opts) {
+    if (opts.buckets === false || !navigator.storageBuckets) return;
+    await captureAsyncCategory(out, 'buckets', () => readBuckets(),
+      (error) => ({ error: String(error), buckets: [] }), false);
+  }
   async function readSiteAll(opts) {
     opts = opts || {};
     const out = { origin: location.origin };
-    // Each block is independent: an error-page document (opaque origin) denies
-    // storage access with SecurityError — record it instead of aborting so the
-    // per-origin snapshot degrades gracefully.
-    try { out.localStorage = readLS(); } catch (e) { out.localStorage = {}; out.errors = out.errors || []; out.errors.push('localStorage: ' + e.message); }
-    if (opts.sessionStorage === false) { out.sessionStorage = {}; out.skipped = (out.skipped || []).concat('sessionStorage'); }
-    else { try { out.sessionStorage = readSS(); } catch (e) { out.sessionStorage = {}; out.errors = out.errors || []; out.errors.push('sessionStorage: ' + e.message); } }
-    try { out.indexedDB = await readIDB(indexedDB); } catch (e) { out.indexedDB = []; out.errors = out.errors || []; out.errors.push('indexedDB: ' + e.message); }
-    try { out.cacheStorage = await readCacheStorage(caches); } catch (e) { out.cacheStorage = []; out.errors = out.errors || []; out.errors.push('cacheStorage: ' + e.message); }
-    if (opts.serviceWorkers === false) { out.serviceWorkers = []; out.skipped = (out.skipped || []).concat('serviceWorkers'); }
-    else { try { out.serviceWorkers = await readSWs(!!opts.fetchScript); } catch (e) { out.serviceWorkers = []; out.errors = out.errors || []; out.errors.push('serviceWorkers: ' + e.message); } }
-    if (opts.opfs !== false && navigator.storage && navigator.storage.getDirectory) {
-      try {
-        out.opfs = await readOPFS(await navigator.storage.getDirectory());
-      } catch (e) {
-        out.opfs = { error: String(e), files: [], dirs: [] };
-      }
-    }
-    if (opts.buckets !== false && navigator.storageBuckets) {
-      try {
-        out.buckets = await readBuckets();
-      } catch (e) {
-        out.buckets = { error: String(e), buckets: [] };
-      }
-    }
+    // Each category has an independent read/fallback path, so one failure does not abort later captures.
+    readLocalStorageCategory(out);
+    readSessionStorageCategory(out, opts);
+    await readIndexedDBCategory(out);
+    await readCacheStorageCategory(out);
+    await readServiceWorkerCategory(out, opts);
+    await readOPFSCategory(out, opts);
+    await readBucketsCategory(out, opts);
     return out;
   }
 

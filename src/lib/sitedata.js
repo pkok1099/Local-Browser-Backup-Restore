@@ -113,14 +113,90 @@ export const SITE_DATA_CONFIG = {
   },
 };
 
+const guardedTabsNamespaces = new WeakSet();
+const activeGuardLoggers = new Map();
+let activeSafeClosePermit = null;
+const fallbackTabRemovalLogger = createSiteLogger({ crawlId: 'tab-removal-guard' });
+
+function reportTabRemovalGuard(tabId, reason) {
+  const message = `tab removal blocked: ${reason}`;
+  const context = { tabId, reason };
+  if (activeGuardLoggers.size) {
+    for (const logFn of activeGuardLoggers.keys()) {
+      try {
+        logFn('ERROR', 'SAFETY', message, context);
+      } catch (e) {
+        /* logging must never weaken the removal guard */
+      }
+    }
+  } else {
+    fallbackTabRemovalLogger.log('ERROR', 'SAFETY', message, context);
+  }
+}
+
+function installTabsRemoveGuard() {
+  let tabs;
+  try {
+    tabs = globalThis.chrome && globalThis.chrome.tabs;
+  } catch (e) {
+    return false;
+  }
+  if (!tabs || typeof tabs !== 'object' || typeof tabs.remove !== 'function') return false;
+  if (guardedTabsNamespaces.has(tabs)) return true;
+
+  const nativeRemove = tabs.remove.bind(tabs);
+  const guardedRemove = function (tabIds, ...args) {
+    const ids = Array.isArray(tabIds) ? tabIds : [tabIds];
+    const tabId = ids.length === 1 ? ids[0] : undefined;
+    const permit = activeSafeClosePermit;
+    if (!permit || ids.length !== 1 || tabId !== permit.tabId || !permit.ownedTabIds.has(tabId)) {
+      const reason = !permit
+        ? 'call outside safeCloseTab'
+        : `tabId ${String(tabId)} is outside the authorized ownedTabIds entry`;
+      reportTabRemovalGuard(tabId, reason);
+      return Promise.reject(new Error(`tab removal blocked: ${reason}`));
+    }
+    activeSafeClosePermit = null; // one synchronous use; aliases cannot reuse the permit
+    return nativeRemove(tabIds, ...args);
+  };
+
+  try {
+    Object.defineProperty(tabs, 'remove', { configurable: true, writable: true, value: guardedRemove });
+  } catch (e) {
+    reportTabRemovalGuard(undefined, `could not install runtime wrapper: ${(e && e.message) || e}`);
+    return false;
+  }
+  if (tabs.remove !== guardedRemove) {
+    reportTabRemovalGuard(undefined, 'runtime wrapper installation did not take effect');
+    return false;
+  }
+  guardedTabsNamespaces.add(tabs);
+  return true;
+}
+
+// Chrome exposes the API namespace before extension scripts run; install the
+// guard at module evaluation, then retry lazily for test and embedded contexts.
+installTabsRemoveGuard();
+
 export function createTabOwnership(notes, verify, onViolation, logFn) {
+  installTabsRemoveGuard();
   const ownedTabIds = new Set();
+  const closingTabIds = new Set();
+  let disposed = false;
+  if (typeof logFn === 'function') activeGuardLoggers.set(logFn, (activeGuardLoggers.get(logFn) || 0) + 1);
+  const dispose = () => {
+    if (disposed || typeof logFn !== 'function') return;
+    disposed = true;
+    const refs = (activeGuardLoggers.get(logFn) || 1) - 1;
+    if (refs > 0) activeGuardLoggers.set(logFn, refs);
+    else activeGuardLoggers.delete(logFn);
+  };
   const own = (tabId) => {
     ownedTabIds.add(tabId);
   };
   async function safeCloseTab(tabId, origin) {
-    if (!ownedTabIds.has(tabId)) {
-      const reason = `refused to close tab ${tabId} — not owned by this operation`;
+    if (!ownedTabIds.has(tabId) || closingTabIds.has(tabId)) {
+      const reason = `refused to close tab ${tabId} — not owned by this operation or already closing`;
       if (notes) notes.push(`SAFETY VIOLATION: REFUSED to close tab ${tabId} — not owned by this operation`);
       if (typeof logFn === 'function') {
         try {
@@ -142,33 +218,41 @@ export function createTabOwnership(notes, verify, onViolation, logFn) {
       }
       return 'refused';
     }
-    ownedTabIds.delete(tabId); // decide exactly once per tab
-    let verdict;
+    closingTabIds.add(tabId);
     try {
-      verdict = await verify(tabId, origin);
-    } catch (e) {
-      verdict = 'gone';
-    }
-    if (verdict === 'gone') return 'gone';
-    if (verdict === 'failed') {
-      // Our tab, but the page failed to load (error page). Safe to close —
-      // this is not a user navigation, just a failed scan.
+      let verdict;
       try {
-        await chrome.tabs.remove(tabId);
+        verdict = await verify(tabId, origin);
+      } catch (e) {
+        verdict = 'gone';
+      }
+      if (verdict === 'gone') return 'gone';
+      if (verdict !== 'ours' && verdict !== 'failed') return 'kept'; // taken over — never close it
+
+      // Failed loads are ours; a normal close also requires a positive page
+      // verification. The runtime wrapper consumes this one-use permit before
+      // dispatching the native API, so aliases/destructuring cannot bypass it.
+      if (!installTabsRemoveGuard()) throw new Error('tab removal runtime guard is unavailable');
+      const permit = { tabId, ownedTabIds };
+      activeSafeClosePermit = permit;
+      let removal;
+      try {
+        removal = chrome.tabs.remove(tabId); // SAFETY-ALLOWED: the single safeCloseTab choke point
+      } finally {
+        if (activeSafeClosePermit === permit) activeSafeClosePermit = null;
+      }
+      try {
+        await removal;
       } catch (e) {
         /* raced away */
-      } // SAFETY-ALLOWED: inside safeCloseTab, failed scan tab
+      }
       return 'closed';
+    } finally {
+      closingTabIds.delete(tabId);
+      ownedTabIds.delete(tabId); // decide exactly once after verification/removal
     }
-    if (verdict !== 'ours') return 'kept'; // taken over — never close it
-    try {
-      await chrome.tabs.remove(tabId);
-    } catch (e) {
-      /* raced away */
-    } // SAFETY-ALLOWED: the single choke point inside safeCloseTab
-    return 'closed';
   }
-  return { ownedTabIds, own, safeCloseTab };
+  return { ownedTabIds, own, safeCloseTab, dispose };
 }
 
 // Verifier for the site-data crawl: a registered tab is ours to close only
@@ -1073,7 +1157,30 @@ export function filterSiteDataOriginsForBackup(origins, opts = {}) {
   return { origins: list.slice(0, max), truncated: candidateCount > max, candidateCount };
 }
 
-// eslint-disable-next-line complexity -- TECH DEBT: complexity 65, refactoring risks behavior change
+function siteDataCategoryFailures(snapshot) {
+  const failures = [];
+  const seen = new Set();
+  const addFailure = (category, error) => {
+    const message = String(error);
+    const key = `${category}:${message}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    failures.push({ category, error: message });
+  };
+  const errors = snapshot && Array.isArray(snapshot.errors) ? snapshot.errors : [];
+  for (const entry of errors) {
+    const message = String(entry);
+    const separator = message.indexOf(':');
+    addFailure(
+      separator > 0 ? message.slice(0, separator).trim() : 'unknown',
+      separator > 0 ? message.slice(separator + 1).trim() : message
+    );
+  }
+  if (snapshot && snapshot.opfs && snapshot.opfs.error) addFailure('opfs', snapshot.opfs.error);
+  if (snapshot && snapshot.buckets && snapshot.buckets.error) addFailure('buckets', snapshot.buckets.error);
+  return failures;
+}
+
 export async function collectSiteData(progress, opts = {}) {
   const lib = await getPagelib();
   const notes = [];
@@ -1107,22 +1214,26 @@ export async function collectSiteData(progress, opts = {}) {
     notes.push(msg);
     log(level, category, msg, context);
   };
-  const { origins } = await discoverOrigins(progress);
-  const selection = filterSiteDataOriginsForBackup(origins, opts);
-  const list = selection.origins;
-  log('INFO', 'SYSTEM', `crawl started: ${list.length} origin(s) selected`, { crawlId, originCount: list.length });
-  if (selection.truncated) {
-    const msg = `origin scan capped at ${list.length} of ${selection.candidateCount} selected candidate origins`;
-    note(msg);
-    log('WARN', 'SYSTEM', msg, { selected: list.length, candidates: selection.candidateCount });
+  async function discoverSelectedOrigins() {
+    const { origins } = await discoverOrigins(progress);
+    const selection = filterSiteDataOriginsForBackup(origins, opts);
+    const list = selection.origins;
+    log('INFO', 'SYSTEM', `crawl started: ${list.length} origin(s) selected`, { crawlId, originCount: list.length });
+    if (selection.truncated) {
+      const msg = `origin scan capped at ${list.length} of ${selection.candidateCount} selected candidate origins`;
+      note(msg);
+      log('WARN', 'SYSTEM', msg, { selected: list.length, candidates: selection.candidateCount });
+    }
+    if (!list.length) {
+      const msg = Array.isArray(opts.includeOrigins)
+        ? 'no website origins selected for site-data backup'
+        : 'no http(s) origins discovered from tabs/history/bookmarks/reading list/cookies';
+      note(msg);
+      log('WARN', 'SYSTEM', msg, {});
+    }
+    return list;
   }
-  if (!list.length) {
-    const msg = Array.isArray(opts.includeOrigins)
-      ? 'no website origins selected for site-data backup'
-      : 'no http(s) origins discovered from tabs/history/bookmarks/reading list/cookies';
-    note(msg);
-    log('WARN', 'SYSTEM', msg, {});
-  }
+  const list = await discoverSelectedOrigins();
   // progress carries (msg, frac, stats): frac is 0..1 within the siteData
   // phase so the dashboard progress bar stays accurate; stats carries the
   // live scan counters (tabs in group, slots, fetched/saved/failed, window).
@@ -1133,10 +1244,11 @@ export async function collectSiteData(progress, opts = {}) {
     sessionStorage: opts.includeSessionStorage === true,
     serviceWorkers: opts.includeServiceWorkers === true,
   };
-  if (!readOpts.sessionStorage || !readOpts.serviceWorkers) {
+  function logExcludedReadCategories(options) {
+    if (options.sessionStorage && options.serviceWorkers) return;
     const skipped = [
-      ...(!readOpts.sessionStorage ? ['sessionStorage'] : []),
-      ...(!readOpts.serviceWorkers ? ['serviceWorkers'] : []),
+      ...(!options.sessionStorage ? ['sessionStorage'] : []),
+      ...(!options.serviceWorkers ? ['serviceWorkers'] : []),
     ];
     log(
       'INFO',
@@ -1145,6 +1257,7 @@ export async function collectSiteData(progress, opts = {}) {
       { excludedCategories: skipped }
     );
   }
+  logExcludedReadCategories(readOpts);
   // UI-overridable tunables (clamped; dashboard Pengaturan page).
   const retryMaxAttempts = clampInt(opts.retryMaxAttempts, 1, 5, SITE_DATA_CONFIG.retry.maxAttempts);
   const readTimeoutMs = clampInt(opts.readTimeoutMs, 15000, 180000, SITE_DATA_CONFIG.retry.readTimeoutMs);
@@ -1158,18 +1271,22 @@ export async function collectSiteData(progress, opts = {}) {
   // pending -> fetching -> fetched -> saved
   //    \-> fetch-failed (terminal)      fetched data is NEVER re-fetched,
   //    \-> save-failed  (re-save only)  only re-saved.
-  const urlStates = new Map();
-  const setUrlState = (origin, status, error) => {
-    const prev = urlStates.get(origin) || { attempts: 0 };
-    urlStates.set(origin, {
-      origin,
-      status,
-      attempts: status === 'fetching' ? prev.attempts + 1 : prev.attempts,
-      error: error || null,
-    });
-  };
-  const urlStateList = () => [...urlStates.values()];
-  for (const o of list) urlStates.set(o, { origin: o, status: 'pending', attempts: 0, error: null });
+  function createUrlStateStore(origins) {
+    const states = new Map();
+    const setState = (origin, status, error) => {
+      const prev = states.get(origin) || { attempts: 0 };
+      states.set(origin, {
+        origin,
+        status,
+        attempts: status === 'fetching' ? prev.attempts + 1 : prev.attempts,
+        error: error || null,
+      });
+    };
+    const listStates = () => [...states.values()];
+    for (const origin of origins) states.set(origin, { origin, status: 'pending', attempts: 0, error: null });
+    return { states, setState, listStates };
+  }
+  const { states: urlStates, setState: setUrlState, listStates: urlStateList } = createUrlStateStore(list);
 
   // ---- incremental checkpoint + resume ----
   // Every N completed origins the partial result is persisted; a later crawl
@@ -1184,53 +1301,58 @@ export async function collectSiteData(progress, opts = {}) {
       return null;
     }
   };
-  let resumedCount = 0;
-  if (opts.resume !== false && checkpointEnabled) {
+  async function resumeFromCheckpoint() {
+    let resumed = 0;
+    if (opts.resume === false || !checkpointEnabled) return resumed;
     try {
-      const s = storageLocal();
-      const cp = s ? await s.get(SITE_DATA_CONFIG.checkpointKey) : null;
-      const saved = cp && cp[SITE_DATA_CONFIG.checkpointKey];
-      if (saved && saved.origins && typeof saved.origins === 'object') {
-        const states = saved.states && typeof saved.states === 'object' ? saved.states : {};
-        for (const o of list) {
-          if (saved.origins[o]) {
-            originsOut[o] = saved.origins[o];
-            if (states[o] === 'saved') {
-              setUrlState(o, 'saved');
-              resumedCount++;
-            } else setUrlState(o, 'fetched'); // data present — needs re-save only
-          }
-        }
-        if (resumedCount)
-          note(`sitedata: resumed ${resumedCount} origin(s) from the previous checkpoint`, 'INFO', 'SYSTEM', {
-            resumedCount,
-          });
+      const storage = storageLocal();
+      const checkpoint = storage ? await storage.get(SITE_DATA_CONFIG.checkpointKey) : null;
+      const saved = checkpoint && checkpoint[SITE_DATA_CONFIG.checkpointKey];
+      if (!saved || !saved.origins || typeof saved.origins !== 'object') return resumed;
+      const savedStates = saved.states && typeof saved.states === 'object' ? saved.states : {};
+      for (const origin of list) {
+        if (!saved.origins[origin]) continue;
+        originsOut[origin] = saved.origins[origin];
+        if (savedStates[origin] === 'saved') {
+          setUrlState(origin, 'saved');
+          resumed++;
+        } else setUrlState(origin, 'fetched'); // data present — needs re-save only
+      }
+      if (resumed) {
+        note(`sitedata: resumed ${resumed} origin(s) from the previous checkpoint`, 'INFO', 'SYSTEM', {
+          resumedCount: resumed,
+        });
       }
     } catch (e) {
       /* checkpoint is best-effort */
     }
+    return resumed;
   }
+  const resumedCount = await resumeFromCheckpoint();
   // Exclusion filter: runs BEFORE any slot is reserved. Excluded URLs are
   // never opened, never attached, never read — not even from pre-existing
   // tabs. They get status SKIPPED (not failed), never enter retry.
   // opts.disableExclusion (tests only) skips this filter.
-  let skippedCount = 0;
-  const exclusionDisabled = opts.disableExclusion === true;
-  for (const o of list) {
-    const st = urlStates.get(o);
-    if (st && (st.status === 'saved' || st.status === 'fetched' || st.status === 'skipped')) continue;
-    if (exclusionDisabled) continue;
-    const { excluded, reason } = isExcluded(o);
-    if (excluded) {
-      setUrlState(o, 'skipped', reason);
-      skippedCount++;
-      log('INFO', 'SYSTEM', `skipped ${o} — ${reason}`, { url: o, corr: o, reason });
+  function filterWorkOrigins() {
+    let skipped = 0;
+    const exclusionDisabled = opts.disableExclusion === true;
+    for (const origin of list) {
+      const state = urlStates.get(origin);
+      if (state && ['saved', 'fetched', 'skipped'].includes(state.status)) continue;
+      if (exclusionDisabled) continue;
+      const { excluded, reason } = isExcluded(origin);
+      if (!excluded) continue;
+      setUrlState(origin, 'skipped', reason);
+      skipped++;
+      log('INFO', 'SYSTEM', `skipped ${origin} — ${reason}`, { url: origin, corr: origin, reason });
     }
+    const work = list.filter((origin) => {
+      const state = urlStates.get(origin);
+      return !state || !['saved', 'fetched', 'skipped'].includes(state.status);
+    });
+    return { skippedCount: skipped, workList: work };
   }
-  const workList = list.filter((o) => {
-    const st = urlStates.get(o);
-    return !st || (st.status !== 'saved' && st.status !== 'fetched' && st.status !== 'skipped');
-  });
+  const { skippedCount, workList } = filterWorkOrigins();
   const total = workList.length;
   const fracFor = (done) => 0.05 + (total ? (done / total) * 0.85 : 0);
 
@@ -1278,7 +1400,14 @@ export async function collectSiteData(progress, opts = {}) {
     () => effectiveWindow,
     (reason) => haltCrawl(reason, true)
   );
+  const assertForwardDeclarationInitialized = (name, value) => {
+    if (value === undefined) throw new Error(`dipanggil sebelum diinisialisasi: ${name}`);
+  };
   function haltCrawl(reason, isViolation) {
+    assertForwardDeclarationInitialized('liveStatus', liveStatus);
+    assertForwardDeclarationInitialized('updateWorkers', updateWorkers);
+    assertForwardDeclarationInitialized('report', report);
+    assertForwardDeclarationInitialized('readyQueue', readyQueue);
     if (halted) return;
     halted = true;
     haltReason = reason;
@@ -1300,6 +1429,10 @@ export async function collectSiteData(progress, opts = {}) {
   // in-flight Worker 2 reads get a grace period to finish, then we force
   // the halt. Prevents double-click via the stopPhase guard.
   function requestStop(reason) {
+    assertForwardDeclarationInitialized('liveStatus', liveStatus);
+    assertForwardDeclarationInitialized('updateWorkers', updateWorkers);
+    assertForwardDeclarationInitialized('report', report);
+    assertForwardDeclarationInitialized('readyQueue', readyQueue);
     if (stopPhase !== 'running') return; // already stopping/stopped — ignore double-click
     stopPhase = 'stopping';
     liveStatus.state = 'stopping';
@@ -1335,6 +1468,14 @@ export async function collectSiteData(progress, opts = {}) {
   const checkStop = () => {
     if (!halted && isStopRequested()) requestStop('dihentikan oleh pengguna');
   };
+
+  if (typeof opts.__testBeforeForwardDeclarationsInitialized === 'function') {
+    opts.__testBeforeForwardDeclarationsInitialized({
+      haltCrawl: () => haltCrawl('pre-initialization test', true),
+      requestStop: () => requestStop('pre-initialization test'),
+      assertForwardDeclarationInitialized,
+    });
+  }
 
   // Failed pool: declared early (before liveStats closure) to avoid TDZ.
   // Failures go here instead of retrying mid-crawl; the pool is processed
@@ -1588,9 +1729,116 @@ export async function collectSiteData(progress, opts = {}) {
   // Worker 1 — opener. One coroutine per origin, all started at once; the
   // slot pool bounds how many proceed concurrently, so opens are parallel
   // (never serial) and never exceed the window.
-  // On a retryable open failure the OLD tab is already closed by the finally
-  // below before the origin is queued for the next wave — tabs never pile up.
-  // eslint-disable-next-line complexity -- TECH DEBT: complexity 30, refactoring risks behavior change
+  async function tryReuseExistingTab(origin, attempt, releaseWorker) {
+    const corr = origin;
+    let existing = null;
+    try {
+      existing = await findOpenTab(origin);
+    } catch (error) {
+      log('DEBUG', 'W1', `findOpenTab failed (benign): ${(error && error.message) || error}`, { url: origin, corr });
+    }
+    if (existing && (existing.url || '').includes(SCAN_MARKER)) existing = null;
+    if (!existing) return false;
+
+    log('INFO', 'W1', `reusing open tab ${existing.id} (not owned — never closed/grouped)`, {
+      url: origin,
+      corr,
+      tabId: existing.id,
+      attempt,
+    });
+    const ok = await waitTabReady(existing.id, origin, isStopRequested);
+    releaseWorker();
+    if (!ok) {
+      if (!halted && !isStopRequested()) {
+        setUrlState(origin, 'fetch-failed', 'open tab did not settle');
+        note(`${origin}: open tab did not settle — skipped`, 'WARN', 'W1', { url: origin, corr: origin });
+        stats.failed++;
+        const n = ++completed;
+        report(`sitedata: ${origin} (${n}/${total}) — skipped`);
+      }
+      return true;
+    }
+    readyQueue.push({ origin, tab: existing, owned: false, attempt });
+    return true;
+  }
+
+  async function prepareOwnedScanTab(rec, attempt) {
+    const tab = await chrome.tabs.create({
+      url: scanUrlFor(rec.origin),
+      active: false,
+      ...(scanWindowId !== null ? { windowId: scanWindowId } : {}),
+    });
+    rec.tab = tab;
+    ownership.own(tab.id); // register IMMEDIATELY after successful create
+    void persistOwnedIds();
+    log('INFO', 'W1', `tab ${tab.id} created`, {
+      url: rec.origin,
+      corr: rec.origin,
+      tabId: tab.id,
+      attempt,
+      window: effectiveWindow,
+    });
+    if (scanWindowId === null) scanWindowId = tab.windowId;
+    trackScanTab(rec);
+    await groupMgr.ensureGroup(tab.id); // straight into the one scan group
+    log('DEBUG', 'W1', `tab ${tab.id} added to scan group`, {
+      url: rec.origin,
+      corr: rec.origin,
+      tabId: tab.id,
+      groupId: groupMgr.id,
+    });
+    rec.grouped = true;
+    stats.inGroup++;
+    const startedAt = Date.now();
+    const ok = await waitTabReady(tab.id, rec.origin, isStopRequested);
+    const loadMs = Date.now() - startedAt;
+    loadMon.record({ loadMs, timedOut: !ok }); // early load signal
+    log(
+      ok ? 'DEBUG' : 'WARN',
+      'W1',
+      ok ? `tab ${tab.id} finished loading in ${loadMs}ms` : `tab ${tab.id} did not finish loading in time`,
+      { url: rec.origin, corr: rec.origin, tabId: tab.id, durationMs: loadMs, attempt }
+    );
+    if (!ok) throw new Error(halted || isStopRequested() ? 'cancelled' : 'tab did not finish loading in time');
+    rec.attempt = attempt;
+  }
+
+  async function openOwnedScanTab(origin, attempt) {
+    const acquired = await slots.acquire(); // slot reserved BEFORE chrome.tabs.create
+    if (!acquired || halted || isStopRequested()) {
+      if (acquired) slots.release();
+      return; // halted: leave this origin unfinished (resumable via checkpoint)
+    }
+    log('DEBUG', 'W1', `slot acquired (${slots.used}/${slots.limit()})`, {
+      url: origin,
+      corr: origin,
+      attempt,
+      window: effectiveWindow,
+    });
+    const rec = { origin, tab: null, grouped: false, finished: false, owned: true };
+    let handedOff = false;
+    try {
+      await prepareOwnedScanTab(rec, attempt);
+      readyQueue.push(rec); // push the SAME rec object (identity matters: the safety net tracks this exact object)
+      handedOff = true;
+    } catch (error) {
+      const message = (error && error.message) || String(error);
+      if (!halted && !isStopRequested()) {
+        addToFailedPool(origin, attempt, message);
+        note(`${origin}: open attempt ${attempt} failed (${message}) — added to failed pool`, 'WARN', 'RETRY', {
+          url: origin,
+          corr: origin,
+          attempt,
+          error: message,
+        });
+        setUrlState(origin, 'fetch-failed', message);
+      }
+    } finally {
+      // Close the old tab before any retry opens a replacement.
+      if (!handedOff) await finishScanTab(rec);
+    }
+  }
+
   async function openOne(origin, attempt) {
     checkStop();
     if (halted || stopPhase !== 'running') return; // guard tripped or STOPPING: stop opening immediately
@@ -1599,117 +1847,18 @@ export async function collectSiteData(progress, opts = {}) {
     log('DEBUG', 'W1', `queued (attempt ${attempt}/${retryMaxAttempts})`, { url: origin, corr, attempt });
     w1Active++;
     updateWorkers();
-    // Pre-existing user tab: read from it, but NEVER group, move, ungroup or
-    // close it — and don't count it against the slot window (slots only cover
-    // tabs this crawl owns). The debugger may attach to read it; the tab is
-    // only ever read, never navigated or modified. No retry for reused tabs:
-    // their state is the user's, not our infrastructure's.
-    let existing = null;
-    try {
-      existing = await findOpenTab(origin);
-    } catch (e) {
-      log('DEBUG', 'W1', `findOpenTab failed (benign): ${(e && e.message) || e}`, { url: origin, corr });
-    }
-    if (existing && (existing.url || '').includes(SCAN_MARKER)) existing = null; // never "reuse" our own scan tabs
-    if (existing) {
-      log('INFO', 'W1', `reusing open tab ${existing.id} (not owned — never closed/grouped)`, {
-        url: origin,
-        corr,
-        tabId: existing.id,
-        attempt,
-      });
-      const ok = await waitTabReady(existing.id, origin, isStopRequested);
+    let workerReleased = false;
+    const releaseWorker = () => {
+      if (workerReleased) return;
+      workerReleased = true;
       w1Active--;
       updateWorkers();
-      if (!ok) {
-        if (!halted && !isStopRequested()) {
-          setUrlState(origin, 'fetch-failed', 'open tab did not settle');
-          note(`${origin}: open tab did not settle — skipped`, 'WARN', 'W1', { url: origin, corr: origin });
-          stats.failed++;
-          const n = ++completed;
-          report(`sitedata: ${origin} (${n}/${total}) — skipped`);
-        }
-        return;
-      }
-      readyQueue.push({ origin, tab: existing, owned: false, attempt });
-      return;
-    }
-    const acquired = await slots.acquire(); // slot reserved BEFORE chrome.tabs.create
-    if (!acquired || halted || isStopRequested()) {
-      if (acquired) slots.release();
-      w1Active--;
-      updateWorkers();
-      return; // halted: leave this origin unfinished (resumable via checkpoint)
-    }
-    log('DEBUG', 'W1', `slot acquired (${slots.used}/${slots.limit()})`, {
-      url: origin,
-      corr,
-      attempt,
-      window: effectiveWindow,
-    });
-    const rec = { origin, tab: null, grouped: false, finished: false, owned: true };
-    let handedOff = false;
+    };
     try {
-      const tab = await chrome.tabs.create({
-        url: scanUrlFor(origin),
-        active: false,
-        ...(scanWindowId !== null ? { windowId: scanWindowId } : {}),
-      });
-      rec.tab = tab;
-      ownership.own(tab.id); // register IMMEDIATELY after successful create
-      void persistOwnedIds();
-      log('INFO', 'W1', `tab ${tab.id} created`, {
-        url: origin,
-        corr,
-        tabId: tab.id,
-        attempt,
-        window: effectiveWindow,
-      });
-      if (scanWindowId === null) scanWindowId = tab.windowId;
-      trackScanTab(rec);
-      await groupMgr.ensureGroup(tab.id); // straight into the one scan group
-      log('DEBUG', 'W1', `tab ${tab.id} added to scan group`, {
-        url: origin,
-        corr,
-        tabId: tab.id,
-        groupId: groupMgr.id,
-      });
-      rec.grouped = true;
-      stats.inGroup++;
-      const t0 = Date.now();
-      const ok = await waitTabReady(tab.id, origin, isStopRequested);
-      const loadMs = Date.now() - t0;
-      loadMon.record({ loadMs, timedOut: !ok }); // early load signal
-      log(
-        ok ? 'DEBUG' : 'WARN',
-        'W1',
-        ok ? `tab ${tab.id} finished loading in ${loadMs}ms` : `tab ${tab.id} did not finish loading in time`,
-        { url: origin, corr, tabId: tab.id, durationMs: loadMs, attempt }
-      );
-      if (!ok) throw new Error(halted || isStopRequested() ? 'cancelled' : 'tab did not finish loading in time');
-      rec.attempt = attempt;
-      readyQueue.push(rec); // push the SAME rec object (identity matters: the
-      handedOff = true; // safety net tracks this exact object)
-    } catch (e) {
-      const msg = (e && e.message) || String(e);
-      if (!halted && !isStopRequested()) {
-        // Main phase: no mid-crawl retry. Close tab (finally), release slot,
-        // log reason, add to failedPool, continue to next URL.
-        addToFailedPool(origin, attempt, msg);
-        note(`${origin}: open attempt ${attempt} failed (${msg}) — added to failed pool`, 'WARN', 'RETRY', {
-          url: origin,
-          corr: origin,
-          attempt,
-          error: msg,
-        });
-        setUrlState(origin, 'fetch-failed', msg);
-      }
+      if (await tryReuseExistingTab(origin, attempt, releaseWorker)) return;
+      await openOwnedScanTab(origin, attempt);
     } finally {
-      // The old tab (if any) is closed HERE, before any retry opens a new
-      // one — tabs never pile up across attempts.
-      if (!handedOff) await finishScanTab(rec);
-      w1Active--;
-      updateWorkers();
+      releaseWorker();
     }
   }
 
@@ -1718,86 +1867,97 @@ export async function collectSiteData(progress, opts = {}) {
   // their slots released in the finally, on every path; pre-existing tabs
   // are left open and untouched (the debugger is always detached in
   // readTabSnapshot's finally).
+  async function skipStoppedReaderRecord(rec) {
+    if (halted || isStopRequested()) {
+      if (rec.owned) await finishScanTab(rec);
+      return true;
+    }
+    if (stopPhase !== 'stopping') return false;
+    setUrlState(rec.origin, 'pending', 'cancelled during stop — resumable');
+    log('INFO', 'SYSTEM', 'read cancelled during STOPPING — marked unfinished (resumable)', {
+      url: rec.origin,
+      corr: rec.origin,
+      tabId: rec.tab.id,
+    });
+    if (rec.owned) await finishScanTab(rec);
+    return true;
+  }
+
+  async function readAndRecordSnapshot(rec) {
+    try {
+      log('DEBUG', 'W2', `debugger attaching to tab ${rec.tab.id}`, {
+        url: rec.origin,
+        corr: rec.origin,
+        tabId: rec.tab.id,
+        attempt: rec.attempt,
+      });
+      const startedAt = Date.now();
+      const snapshot = await readWithTimeout(rec.tab.id, lib, readOpts, readTimeoutMs);
+      const readMs = Date.now() - startedAt;
+      for (const failure of siteDataCategoryFailures(snapshot)) {
+        note(
+          `${rec.origin}: ${failure.category} capture failed (${failure.error}); other categories were retained`,
+          'ERROR',
+          'W2',
+          { url: rec.origin, corr: rec.origin, category: failure.category, error: failure.error }
+        );
+      }
+      snapshot.fromOpenTab = !rec.owned;
+      originsOut[rec.origin] = snapshot;
+      setUrlState(rec.origin, 'fetched');
+      stats.fetched++;
+      log('INFO', 'W2', `data read in ${readMs}ms`, {
+        url: rec.origin,
+        corr: rec.origin,
+        tabId: rec.tab.id,
+        durationMs: readMs,
+        attempt: rec.attempt,
+      });
+      return true;
+    } catch (error) {
+      const message = (error && error.message) || String(error);
+      if (halted || isStopRequested()) return false;
+      addToFailedPool(rec.origin, rec.attempt, message);
+      setUrlState(rec.origin, 'fetch-failed', message);
+      note(`${rec.origin}: read attempt ${rec.attempt} failed (${message}) — added to failed pool`, 'WARN', 'RETRY', {
+        url: rec.origin,
+        corr: rec.origin,
+        tabId: rec.tab.id,
+        attempt: rec.attempt,
+        error: message,
+      });
+      report(`sitedata: ${rec.origin} — read attempt ${rec.attempt} failed`);
+      return true;
+    }
+  }
+
+  async function finishReaderRecord(rec, terminal) {
+    if (terminal) {
+      const n = ++completed;
+      report(`sitedata: ${rec.origin} (${n}/${total})`);
+    }
+    if (++sinceCheckpoint >= checkpointEvery) {
+      sinceCheckpoint = 0;
+      await storageSaver.write(); // incremental save (retry queue on failure)
+    }
+    if (rec.owned) await finishScanTab(rec); // closes tab, releases slot — always
+    w2Active--;
+    updateWorkers();
+  }
+
   async function readerLoop() {
     for (;;) {
       checkStop();
       const rec = await readyQueue.take();
       if (rec === DONE) return;
-      if (halted || isStopRequested()) {
-        // Guard tripped: stop reading. Close owned tabs unread (their slots
-        // are released); the origins stay unfinished and resumable.
-        if (rec.owned) await finishScanTab(rec);
-        continue;
-      }
-      if (stopPhase === 'stopping') {
-        // STOPPING: don't start new reads. Mark unfinished (resumable, NOT
-        // failed), close the owned tab, keep draining the queue.
-        setUrlState(rec.origin, 'pending', 'cancelled during stop — resumable');
-        log('INFO', 'SYSTEM', `read cancelled during STOPPING — marked unfinished (resumable)`, {
-          url: rec.origin,
-          corr: rec.origin,
-          tabId: rec.tab.id,
-        });
-        if (rec.owned) await finishScanTab(rec);
-        continue;
-      }
-      let terminal = false; // terminal fetch outcome: counts toward completed
-      const rcorr = rec.origin;
+      if (await skipStoppedReaderRecord(rec)) continue;
       w2Active++;
       updateWorkers();
+      let terminal = false;
       try {
-        log('DEBUG', 'W2', `debugger attaching to tab ${rec.tab.id}`, {
-          url: rec.origin,
-          corr: rcorr,
-          tabId: rec.tab.id,
-          attempt: rec.attempt,
-        });
-        const t0 = Date.now();
-        const snap = await readWithTimeout(rec.tab.id, lib, readOpts, readTimeoutMs);
-        const readMs = Date.now() - t0;
-        snap.fromOpenTab = !rec.owned;
-        originsOut[rec.origin] = snap;
-        setUrlState(rec.origin, 'fetched');
-        stats.fetched++;
-        log('INFO', 'W2', `data read in ${readMs}ms`, {
-          url: rec.origin,
-          corr: rcorr,
-          tabId: rec.tab.id,
-          durationMs: readMs,
-          attempt: rec.attempt,
-        });
-        terminal = true;
-      } catch (e) {
-        const msg = (e && e.message) || String(e);
-        if (!halted && !isStopRequested()) {
-          // No mid-crawl retry: tab is closed in finally, slot released,
-          // reason logged, URL goes to failedPool. Next URL continues.
-          addToFailedPool(rec.origin, rec.attempt, msg);
-          setUrlState(rec.origin, 'fetch-failed', msg);
-          note(`${rec.origin}: read attempt ${rec.attempt} failed (${msg}) — added to failed pool`, 'WARN', 'RETRY', {
-            url: rec.origin,
-            corr: rec.origin,
-            tabId: rec.tab.id,
-            attempt: rec.attempt,
-            error: msg,
-          });
-          report(`sitedata: ${rec.origin} — read attempt ${rec.attempt} failed`);
-          terminal = true;
-        }
+        terminal = await readAndRecordSnapshot(rec);
       } finally {
-        // Capture the completion number BEFORE any await: reports must stay
-        // in completion order so (n/N) counts and frac never go backwards.
-        if (terminal) {
-          const n = ++completed;
-          report(`sitedata: ${rec.origin} (${n}/${total})`);
-        }
-        if (++sinceCheckpoint >= checkpointEvery) {
-          sinceCheckpoint = 0;
-          await storageSaver.write(); // incremental save (retry queue on failure)
-        }
-        if (rec.owned) await finishScanTab(rec); // closes tab, releases slot — always
-        w2Active--;
-        updateWorkers();
+        await finishReaderRecord(rec, terminal);
       }
     }
   }
@@ -1832,7 +1992,7 @@ export async function collectSiteData(progress, opts = {}) {
     },
   });
 
-  try {
+  async function runSiteDataWaves() {
     report(
       `sitedata: starting scan of ${total} origin(s) — window ${configuredWindow}, up to ${retryMaxAttempts} attempt(s)` +
         (resumedCount ? ` (${resumedCount} resumed from checkpoint)` : '')
@@ -1844,27 +2004,20 @@ export async function collectSiteData(progress, opts = {}) {
       { total, window: configuredWindow, maxAttempts: retryMaxAttempts }
     );
 
-    // Run one wave: Worker 1 opens in parallel (slot-gated), Worker 2 reads
-    // concurrently. Failures go to failedPool — no mid-wave retry, no sleep
-    // holding the normal queue.
     async function runWave(items) {
       checkStop();
       activeReaders = [];
       for (let i = 0; i < SITE_DATA_CONFIG.readConcurrency; i++) activeReaders.push(readerLoop());
-      await Promise.all(items.map((w) => openOne(w.origin, w.attempt)));
+      await Promise.all(items.map((work) => openOne(work.origin, work.attempt)));
       for (let i = 0; i < activeReaders.length; i++) readyQueue.push(DONE);
       await Promise.all(activeReaders);
       activeReaders = [];
     }
 
-    // Phase 1 — main: single pass over every URL.
-    await runWave(workList.map((o) => ({ origin: o, attempt: 1 })));
+    await runWave(workList.map((origin) => ({ origin, attempt: 1 })));
 
-    // Phase 2 — retry: failedPool runs through the same pipeline (tab cap,
-    // group, safety, window adaptation all still apply). No sleep between
-    // phases — the queue is already drained.
     for (let attempt = 2; attempt <= retryMaxAttempts && failedPool.length > 0 && !halted; attempt++) {
-      const items = failedPool.splice(0).map((f) => ({ origin: f.origin, attempt }));
+      const items = failedPool.splice(0).map((failure) => ({ origin: failure.origin, attempt }));
       const phaseMsg = `sitedata: retry phase — attempt ${attempt}/${retryMaxAttempts} (${items.length} URL(s))`;
       log('INFO', 'RETRY', `retry phase started: attempt ${attempt}/${retryMaxAttempts} for ${items.length} URL(s)`, {
         attempt,
@@ -1880,69 +2033,51 @@ export async function collectSiteData(progress, opts = {}) {
       });
     }
 
-    // Permanent failures: exhausted all attempts.
-    for (const f of failedPool.splice(0)) {
-      setUrlState(f.origin, 'fetch-failed', f.error);
-      note(`${f.origin}: read failed permanently after ${retryMaxAttempts} attempt(s) (${f.error})`, 'ERROR', 'W2', {
-        url: f.origin,
-        corr: f.origin,
-        attempt: retryMaxAttempts,
-        error: f.error,
-      });
+    for (const failure of failedPool.splice(0)) {
+      setUrlState(failure.origin, 'fetch-failed', failure.error);
+      note(
+        `${failure.origin}: read failed permanently after ${retryMaxAttempts} attempt(s) (${failure.error})`,
+        'ERROR',
+        'W2',
+        {
+          url: failure.origin,
+          corr: failure.origin,
+          attempt: retryMaxAttempts,
+          error: failure.error,
+        }
+      );
       stats.failed++;
     }
+  }
 
-    if (halted) {
-      completed = total; // let the bar settle; the message says ABORTED/STOPPED
-      const tag = haltIsViolation ? 'ABORTED' : 'STOPPED';
-      report(
-        `sitedata: ${tag} — ${haltReason} (${stats.done}/${total} origins saved; checkpoint kept, resume to continue)`
-      );
-      return {
-        schemaVersion: 1,
-        method: 'chrome.debugger+scripting (page-context execution)',
-        origins: originsOut,
-        partitions: [],
-        notes,
-        aborted: haltIsViolation,
-        stopped: !haltIsViolation,
-        haltReason,
-        abortReason: haltReason, // backward-compat alias
-        urlStates: urlStateList(),
-      };
-    }
+  function buildHaltedSiteDataResult() {
+    completed = total; // let the bar settle; the message says ABORTED/STOPPED
+    const tag = haltIsViolation ? 'ABORTED' : 'STOPPED';
+    report(
+      `sitedata: ${tag} — ${haltReason} (${stats.done}/${total} origins saved; checkpoint kept, resume to continue)`
+    );
+    return {
+      schemaVersion: 1,
+      method: 'chrome.debugger+scripting (page-context execution)',
+      origins: originsOut,
+      partitions: [],
+      notes,
+      aborted: haltIsViolation,
+      stopped: !haltIsViolation,
+      haltReason,
+      abortReason: haltReason, // backward-compat alias
+      urlStates: urlStateList(),
+    };
+  }
 
-    // Final storage flush: every fetched origin must be saved (or loudly
-    // marked save-failed) before we report completion. A quota-full here
-    // halts the crawl — re-check before reporting success.
-    await storageSaver.write();
-    if (halted) {
-      completed = total;
-      const tag = haltIsViolation ? 'ABORTED' : 'STOPPED';
-      report(
-        `sitedata: ${tag} — ${haltReason} (${stats.done}/${total} origins saved; checkpoint kept, resume to continue)`
-      );
-      return {
-        schemaVersion: 1,
-        method: 'chrome.debugger+scripting (page-context execution)',
-        origins: originsOut,
-        partitions: [],
-        notes,
-        aborted: haltIsViolation,
-        stopped: !haltIsViolation,
-        haltReason,
-        abortReason: haltReason, // backward-compat alias
-        urlStates: urlStateList(),
-      };
-    }
-
+  async function buildSuccessfulSiteDataResult() {
     let partitions = [];
     try {
       pg('sitedata: scanning partitioned (iframe) storage of open tabs', 0.95);
       partitions = await readPartitions(progress, new Set(workList));
-    } catch (e) {
-      note('partitioned storage scan failed: ' + ((e && e.message) || e), 'ERROR', 'W2', {
-        error: (e && e.message) || String(e),
+    } catch (error) {
+      note('partitioned storage scan failed: ' + ((error && error.message) || error), 'ERROR', 'W2', {
+        error: (error && error.message) || String(error),
       });
     }
 
@@ -1965,72 +2100,99 @@ export async function collectSiteData(progress, opts = {}) {
       crawlId,
       excludedCategories, // site-data sub-categories not captured (not reliably restorable)
     };
-  } finally {
-    // Cleanup sweep (also runs on user Stop): drain readers, then the safety
-    // net finishes any tab the workers didn't — finishScanTab is idempotent
-    // and only ever touches tabs in ownedTabIds (never by query or group).
-    // The tab group disappears on its own when its last tab closes; we never
-    // delete the group directly.
-    log('INFO', 'SYSTEM', 'cleanup: detaching debuggers and closing owned tabs', { owned: ownership.ownedTabIds.size });
+  }
+
+  async function drainSiteDataReadersAndTabs() {
     for (let i = 0; i < SITE_DATA_CONFIG.readConcurrency; i++) readyQueue.push(DONE);
     if (cpuMon) cpuMon.stop();
     await Promise.all(activeReaders);
     for (const rec of [...scanTabs]) {
       try {
         await finishScanTab(rec);
-      } catch (e) {
-        log('WARN', 'SYSTEM', `safety-net finishScanTab threw: ${(e && e.message) || e}`, {
+      } catch (error) {
+        log('WARN', 'SYSTEM', `safety-net finishScanTab threw: ${(error && error.message) || error}`, {
           url: rec.origin,
           corr: rec.origin,
         });
       }
     }
-    // Verify clean: no owned tab may remain. Retry a few times, then log
-    // ERROR with the tab IDs if any refuse to close.
-    for (let i = 0; i < stopCfg.verifyRetries; i++) {
+  }
+
+  async function verifyOwnedScanTabsClosed() {
+    for (let attempt = 0; attempt < stopCfg.verifyRetries; attempt++) {
       const remaining = [...ownership.ownedTabIds];
       if (!remaining.length) break;
       log(
         'WARN',
         'SYSTEM',
-        `cleanup verification: ${remaining.length} owned tab(s) remain — retrying close (attempt ${i + 1}/${stopCfg.verifyRetries})`,
-        { tabIds: remaining, attempt: i + 1 }
+        `cleanup verification: ${remaining.length} owned tab(s) remain — retrying close (attempt ${attempt + 1}/${stopCfg.verifyRetries})`,
+        { tabIds: remaining, attempt: attempt + 1 }
       );
       for (const tabId of remaining) {
         try {
           await ownership.safeCloseTab(tabId, '');
-        } catch (e) {
+        } catch (error) {
           /* ignore */
         }
       }
-      if (i < stopCfg.verifyRetries - 1) await new Promise((r) => setTimeout(r, stopCfg.verifyDelayMs));
+      if (attempt < stopCfg.verifyRetries - 1) {
+        await new Promise((resolve) => setTimeout(resolve, stopCfg.verifyDelayMs));
+      }
     }
     const leftover = [...ownership.ownedTabIds];
     if (leftover.length) {
-      const msg = `cleanup incomplete: ${leftover.length} owned tab(s) could not be closed: ${leftover.join(', ')}`;
-      log('ERROR', 'SYSTEM', msg, { tabIds: leftover });
-      note(`sitedata: WARNING — ${msg}`, 'ERROR', 'SYSTEM', { tabIds: leftover });
+      const message = `cleanup incomplete: ${leftover.length} owned tab(s) could not be closed: ${leftover.join(', ')}`;
+      log('ERROR', 'SYSTEM', message, { tabIds: leftover });
+      note(`sitedata: WARNING — ${message}`, 'ERROR', 'SYSTEM', { tabIds: leftover });
     } else {
       log('INFO', 'SYSTEM', 'cleanup verified: no owned tabs remain', {});
     }
-    // Persist (or clear) the owned-tab record for crash recovery.
+    return leftover;
+  }
+
+  async function persistOwnedTabRecord(leftover) {
     try {
-      const s = storageLocal();
-      if (s) {
-        if (leftover.length) await s.set({ [stopCfg.ownedTabsKey]: { tabIds: leftover, savedAt: Date.now() } });
-        else await s.remove(stopCfg.ownedTabsKey);
-      }
-    } catch (e) {
+      const storage = storageLocal();
+      if (!storage) return;
+      if (leftover.length) await storage.set({ [stopCfg.ownedTabsKey]: { tabIds: leftover, savedAt: Date.now() } });
+      else await storage.remove(stopCfg.ownedTabsKey);
+    } catch (error) {
       /* best-effort */
     }
-    // Incremental result handling: keep the checkpoint when the crawl didn't
-    // finish (halted or thrown) so it can resume; clear it on success.
+  }
+
+  async function finalizeSiteDataCheckpoint() {
     storageSaver.cancel();
     if (halted)
       await storageSaver.write(); // best-effort: keeps the checkpoint for resume
     else await clearCheckpoint();
     await logger.flush(); // persist any remaining log entries
+    ownership.dispose();
   }
+
+  async function cleanupSiteDataCrawl() {
+    // Cleanup also runs on user Stop. Tabs are only touched through the owned-ID verifier.
+    log('INFO', 'SYSTEM', 'cleanup: detaching debuggers and closing owned tabs', {
+      owned: ownership.ownedTabIds.size,
+    });
+    await drainSiteDataReadersAndTabs();
+    const leftover = await verifyOwnedScanTabsClosed();
+    await persistOwnedTabRecord(leftover);
+    await finalizeSiteDataCheckpoint();
+  }
+
+  async function executeSiteDataCrawl() {
+    try {
+      await runSiteDataWaves();
+      if (halted) return buildHaltedSiteDataResult();
+      await storageSaver.write();
+      if (halted) return buildHaltedSiteDataResult();
+      return await buildSuccessfulSiteDataResult();
+    } finally {
+      await cleanupSiteDataCrawl();
+    }
+  }
+  return executeSiteDataCrawl();
 }
 
 export function computeSiteDataCounts(section) {

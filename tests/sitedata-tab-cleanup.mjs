@@ -28,7 +28,7 @@ import assert from 'node:assert/strict';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCount = 2, createDelayMs = 5, attachDelayMs = 0, preExisting = [], readsSucceed = false, duplicateCreateId = false, loadDelayMs = 0, failAttachTimes = 0, failEval = false, storageFailMode = 'none' } = {}) {
+function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCount = 2, createDelayMs = 5, attachDelayMs = 0, preExisting = [], readsSucceed = false, duplicateCreateId = false, loadDelayMs = 0, failAttachTimes = 0, failEval = false, storageFailMode = 'none', siteDataErrors = [], opfsError = null, bucketsError = null } = {}) {
   const created = [];
   const removed = [];
   const ungrouped = [];
@@ -48,7 +48,11 @@ function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCou
   const storageData = {};
   const storageWrites = [];
   // Payload served by the mocked debugger when readsSucceed is on.
-  const txPayload = JSON.stringify({ localStorage: { reuse_key: 'reuse_value' } });
+  const snapshot = { localStorage: { reuse_key: 'reuse_value' } };
+  if (siteDataErrors.length) snapshot.errors = siteDataErrors;
+  if (opfsError) snapshot.opfs = { error: opfsError, files: [], dirs: [] };
+  if (bucketsError) snapshot.buckets = { error: bucketsError, buckets: [] };
+  const txPayload = JSON.stringify(snapshot);
   const chrome = {
     tabs: {
       query: async (q = {}) => {
@@ -653,6 +657,63 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   assert.ok(readChunk < detached && detached < removed, 'snapshot is read before debugger detach and tab close');
   assert.ok(removed < checkpointWrite && checkpointWrite < checkpointClear, 'checkpoint persists after scan-tab cleanup, then clears');
   console.log('PASS scenario N: collectSiteData inputs, output contract, and side-effect order');
+}
+
+// Scenario O: stop callbacks invoked before their forward declarations are initialized fail with stable messages.
+{
+  const fake = makeFakeChrome({ originCount: 1, readsSucceed: true });
+  globalThis.chrome = fake.chrome;
+  const observed = {};
+  const section = await collectSiteData(() => {}, {
+    includeOrigins: ['http://example0.com'],
+    scanWindowSize: 2,
+    retryMaxAttempts: 1,
+    __testBeforeForwardDeclarationsInitialized({ haltCrawl, requestStop, assertForwardDeclarationInitialized }) {
+      for (const [name, callback] of Object.entries({ haltCrawl, requestStop })) {
+        try { callback(); } catch (error) { observed[name] = error.message; }
+      }
+      for (const name of ['liveStatus', 'updateWorkers', 'report', 'readyQueue']) {
+        assert.throws(
+          () => assertForwardDeclarationInitialized(name, undefined),
+          new Error(`dipanggil sebelum diinisialisasi: ${name}`)
+        );
+      }
+    },
+  });
+  assert.equal(observed.haltCrawl, 'dipanggil sebelum diinisialisasi: liveStatus');
+  assert.equal(observed.requestStop, 'dipanggil sebelum diinisialisasi: liveStatus');
+  assert.equal(section.aborted, undefined);
+  assert.deepEqual(Object.keys(section.origins), ['http://example0.com']);
+  console.log('PASS scenario O: early stop callbacks receive explicit forward-declaration guards');
+}
+
+// Scenario P: category failures are logged independently while other data survives.
+{
+  const fake = makeFakeChrome({
+    originCount: 1,
+    readsSucceed: true,
+    siteDataErrors: ['indexedDB: access denied', 'cacheStorage: unavailable'],
+    opfsError: 'permission denied',
+    bucketsError: 'quota denied',
+  });
+  globalThis.chrome = fake.chrome;
+  const logEntries = [];
+  const section = await collectSiteData(() => {}, {
+    includeOrigins: ['http://example0.com'],
+    scanWindowSize: 2,
+    retryMaxAttempts: 1,
+    onLogEntry: (entry) => logEntries.push(entry),
+  });
+  const snapshot = section.origins['http://example0.com'];
+  assert.deepEqual(snapshot.localStorage, { reuse_key: 'reuse_value' });
+  assert.deepEqual(snapshot.errors, ['indexedDB: access denied', 'cacheStorage: unavailable']);
+  const categoryFailures = logEntries.filter(
+    (entry) => entry.level === 'ERROR' && entry.category === 'W2' && entry.message.includes('capture failed')
+  );
+  assert.deepEqual(categoryFailures.map((entry) => entry.context.category).sort(), ['buckets', 'cacheStorage', 'indexedDB', 'opfs']);
+  assert.ok(categoryFailures.every((entry) => entry.url === 'http://example0.com'));
+  assert.ok(section.notes.some((message) => message.includes('indexedDB capture failed')));
+  console.log('PASS scenario P: category failures logged independently while successful origin data remains');
 }
 
 console.log('PASS siteData streaming pipeline: hard window, single group, takeover safety, adaptive CPU');
