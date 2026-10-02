@@ -24,7 +24,7 @@ import { LocalStorageProvider } from '@/lib/providers';
 import { buildSettingsExport, parseSettingsImport } from '@/lib/settings';
 import { patchState, setState, updateForm, appendLog, getState, type CloudForm, type RemoteRef } from './store';
 import {
-  buildBackupObject,
+  buildCloudBackupObject,
   saveTextFile,
   fileName,
   askPassword,
@@ -227,7 +227,7 @@ export async function onCloudBackupNow(trigger = 'manual', destination: 'both' |
   let localDownload: { filename: string } | null = null;
   try {
     const r = await runCloudBackup({
-      collectBackup: buildBackupObject,
+      collectBackup: buildCloudBackupObject,
       onProgress: (m: string) => patchState('cloud', (c) => ({ ...c, detail: m })),
       password: pw,
       useSessionPassword: true,
@@ -352,7 +352,7 @@ async function runScheduledCloudBackup(reason: string) {
   try {
     const cfg = await loadCloudConfig();
     const r = await runCloudBackup({
-      collectBackup: buildBackupObject,
+      collectBackup: buildCloudBackupObject,
       onProgress: (m: string) => patchState('cloud', (c) => ({ ...c, detail: m })),
       password: null,
       useSessionPassword: true,
@@ -389,7 +389,7 @@ async function runAutomaticCloudRetry() {
   try {
     const cfg = await loadCloudConfig();
     const r = await runCloudBackup({
-      collectBackup: buildBackupObject,
+      collectBackup: buildCloudBackupObject,
       onProgress: (m: string) => patchState('cloud', (c) => ({ ...c, detail: m })),
       useSessionPassword: true,
       plaintextAck: cfg.encryption === 'disabled',
@@ -424,7 +424,7 @@ export async function onRetrySync() {
   try {
     const cfg = await loadCloudConfig();
     const r = await runCloudBackup({
-      collectBackup: buildBackupObject,
+      collectBackup: buildCloudBackupObject,
       onProgress: (m: string) => patchState('cloud', (c) => ({ ...c, detail: m })),
       password: null,
       useSessionPassword: true,
