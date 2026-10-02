@@ -40,9 +40,9 @@ import {
 } from './scheduler.js';
 
 export const CONFIG_KEY = 'bbr:cloud-config';
-export const CLOUD_STATE_KEY = 'bbr:cloud-state';
+const CLOUD_STATE_KEY = 'bbr:cloud-state';
 export const PENDING_KEY = 'bbr:pending-upload';
-export const SESSION_PW_KEY = 'bbr:session-pw';
+const SESSION_PW_KEY = 'bbr:session-pw';
 
 export function normalizeBackupDestination(value) {
   return ['local-only', 'cloud-only', 'both'].includes(value) ? value : 'cloud-only';
@@ -141,7 +141,7 @@ export function createProviderFromConfig(cfg, { apiBaseUrl: _apiBaseUrl } = {}) 
 
 // ---------------- status machine ----------------
 
-export const PHASES = Object.freeze([
+const PHASES = Object.freeze([
   'not-configured',
   'ready',
   'collecting',
@@ -170,7 +170,7 @@ export async function getCloudState() {
   return o[CLOUD_STATE_KEY] || { phase: 'ready', updatedAt: null, lastError: null };
 }
 
-export async function setCloudPhase(phase, detail = '', lastError = null) {
+async function setCloudPhase(phase, detail = '', lastError = null) {
   if (!PHASES.includes(phase)) throw new TypedError('ERR_MALFORMED', `Unknown cloud phase "${phase}".`);
   const state = { phase, detail: String(detail || ''), lastError, updatedAt: new Date().toISOString() };
   await chrome.storage.local.set({ [CLOUD_STATE_KEY]: state });
@@ -221,7 +221,7 @@ export function statusFromError(e) {
 // ---------------- encryption policy ----------------
 
 // effectiveEncryption: 'required' (public repo) | 'enabled' (user choice) | 'disabled' (private + explicit)
-export function effectiveEncryption(config, repoInfo) {
+function effectiveEncryption(config, repoInfo) {
   const cfg = normalizeCloudConfig(config);
   if (cfg.provider === 'local') return cfg.encryption === 'disabled' ? 'disabled' : 'enabled';
   if (repoInfo && repoInfo.private === false) return 'required'; // public repository — enforced in code
@@ -253,7 +253,7 @@ function isRetryableUploadError(e) {
   return ['ERR_NETWORK', 'ERR_GITHUB_HTTP', 'ERR_VERIFY_FAILED'].includes(errCode(e));
 }
 
-export async function schedulePendingCloudRetry() {
+async function schedulePendingCloudRetry() {
   const cfg = await loadCloudConfig();
   const pending = await loadPendingUpload();
   if (!cfg.autoRetryCloud || !pending || !chrome.alarms?.create) return { scheduled: false };
@@ -339,27 +339,19 @@ function sameLocalDay(isoA, dateB) {
 
 // ---------------- session password (memory-only, for scheduled runs) ----------------
 
-export async function keepSessionPassword(password) {
+async function keepSessionPassword(password) {
   if (!password) return;
   // chrome.storage.session is RAM-only: never written to disk, cleared when the
   // browser closes, accessible only to this extension's trusted contexts.
   await chrome.storage.session.set({ [SESSION_PW_KEY]: password });
 }
 
-export async function readSessionPassword() {
+async function readSessionPassword() {
   try {
     const o = await chrome.storage.session.get(SESSION_PW_KEY);
     return o[SESSION_PW_KEY] || null;
   } catch (e) {
     return null;
-  }
-}
-
-export async function forgetSessionPassword() {
-  try {
-    await chrome.storage.session.remove(SESSION_PW_KEY);
-  } catch (e) {
-    /* ignore */
   }
 }
 
@@ -405,9 +397,280 @@ async function updateRemoteManifest(provider, entry) {
   return manifest;
 }
 
-// collectBackup: async (onProgress, collectOptions) => finalized backup object
-//   (injected by the dashboard — heavy work always runs in an extension page).
-// eslint-disable-next-line complexity -- TECH DEBT: complexity 77, refactoring risks behavior change
+function resolveBackupPolicy(cfg, { destination, trigger, preserveLocalCopy, autoRetryCloud }) {
+  const explicitDestination = destination !== null;
+  const normalizedDestination = normalizeBackupDestination(destination === null ? 'both' : destination);
+  const retryEnabled = autoRetryCloud === null ? cfg.autoRetryCloud : !!autoRetryCloud;
+  const keepLegacyCopy =
+    preserveLocalCopy === null ? !explicitDestination || trigger === 'scheduled' : !!preserveLocalCopy;
+  const transientRetryCopy =
+    shouldKeepTransientRetryCopy({ destination: normalizedDestination, autoRetryCloud: retryEnabled }) &&
+    !keepLegacyCopy;
+  return {
+    explicitDestination,
+    normalizedDestination,
+    retryEnabled,
+    keepLegacyCopy,
+    transientRetryCopy,
+    keepLocalArtifact: cfg.provider === 'local' || keepLegacyCopy || transientRetryCopy,
+  };
+}
+
+function assertBackupDestination(cfg, policy) {
+  if (policy.normalizedDestination === 'local-only') {
+    throw new TypedError(
+      'ERR_DESTINATION',
+      'Local-only backups are downloaded directly and do not use the cloud backup pipeline.'
+    );
+  }
+  if (policy.explicitDestination && cfg.provider === 'local') {
+    throw new TypedError('ERR_DESTINATION', 'Choose GitHub as the provider for Cloud only or Both backups.');
+  }
+}
+
+async function connectCloudProvider(cfg, provider, retryEnabled, trigger, log) {
+  log('connecting to ' + (cfg.provider === 'local' ? 'local storage' : 'GitHub…'));
+  try {
+    await provider.connect();
+    return provider.repoInfo || null;
+  } catch (error) {
+    const status = statusFromError(error);
+    if (retryEnabled && isRetryableUploadError(error) && (await loadPendingUpload())) await schedulePendingCloudRetry();
+    await setCloudPhase(status || 'upload-failed', 'connect failed', {
+      code: errCode(error),
+      message: error.message,
+    });
+    await recordSchedulerOutcome(trigger, false, error);
+    throw error;
+  }
+}
+
+function resolveEncryptionPolicy(cfg, repoInfo, plaintextAck) {
+  const mode = effectiveEncryption(cfg, repoInfo);
+  const encRequired = mode !== 'disabled';
+  const plaintextAllowed = mode === 'disabled' && plaintextAck === true;
+  if (mode === 'disabled' && !plaintextAck) {
+    throw new TypedError(
+      'ERR_PLAINTEXT_NOT_ALLOWED',
+      'Plaintext backup requires an explicit user acknowledgement (private repositories only).'
+    );
+  }
+  return { encRequired, plaintextAllowed };
+}
+
+async function syncPendingCloudArtifact({
+  provider,
+  pending,
+  normalizedDestination,
+  downloadArtifact,
+  trigger,
+  plaintextAllowed,
+  log,
+}) {
+  log('pending upload found — syncing existing artifact (no re-collection)…');
+  try {
+    let localDownload = null;
+    let localDownloadError = null;
+    if (normalizedDestination === 'both' && typeof downloadArtifact === 'function') {
+      try {
+        const stored = await new LocalStorageProvider().downloadBackup(pending.id);
+        const artifact = await makeRemoteArtifact(stored.text, {
+          backupId: pending.id,
+          createdAt: pending.createdAt,
+          trigger,
+        });
+        ({ localDownload, localDownloadError } = await maybeDownloadLocalCopy({
+          destination: normalizedDestination,
+          downloadArtifact,
+          artifact,
+          log,
+        }));
+      } catch (error) {
+        localDownloadError = error && error.message ? error.message : String(error);
+        log(`local download failed: ${localDownloadError}`);
+      }
+    }
+    const result = await syncPendingArtifact({ provider, pending, plaintextAllowed, trigger });
+    await setCloudPhase('upload-successful', `Synced pending artifact ${pending.id}`);
+    return { ...result, localDownload, localDownloadError };
+  } catch (error) {
+    const status = statusFromError(error);
+    if (isRetryableUploadError(error)) await schedulePendingCloudRetry();
+    await setCloudPhase(status || 'upload-failed', 'pending sync failed', {
+      code: errCode(error),
+      message: error.message,
+    });
+    await recordSchedulerOutcome(trigger, false, error);
+    throw error;
+  }
+}
+
+async function handlePendingCloudUpload({
+  provider,
+  trigger,
+  normalizedDestination,
+  downloadArtifact,
+  encRequired,
+  plaintextAllowed,
+  log,
+}) {
+  let pending = await loadPendingUpload();
+  if (pending && (trigger === 'manual' || trigger === 'sync-retry')) {
+    pending = { ...pending, retryCount: 0, retryAt: null, retryExhausted: false, retryCancelled: false };
+    await savePendingUpload(pending);
+    try {
+      await chrome.alarms.clear(CLOUD_RETRY_ALARM);
+    } catch (error) {
+      /* best-effort alarm cleanup */
+    }
+  }
+  const retryTrigger = trigger === 'auto-retry' || trigger === 'sync-retry';
+  if (pending && (sameLocalDay(pending.createdAt, new Date()) || retryTrigger) && pending.encrypted === encRequired) {
+    return syncPendingCloudArtifact({
+      provider,
+      pending,
+      normalizedDestination,
+      downloadArtifact,
+      trigger,
+      plaintextAllowed,
+      log,
+    });
+  }
+  if (pending && !sameLocalDay(pending.createdAt, new Date())) {
+    if (pending.transientLocalCopy) {
+      try {
+        await new LocalStorageProvider().deleteBackup(pending.id);
+      } catch (error) {
+        /* stale retry artifact cleanup is best-effort */
+      }
+    }
+    await clearPendingUpload();
+  }
+  return null;
+}
+
+async function ensureCloudPassword({ password, useSessionPassword, encRequired, trigger }) {
+  let resolvedPassword = password;
+  if (encRequired && !resolvedPassword && useSessionPassword) resolvedPassword = await readSessionPassword();
+  if (encRequired && !resolvedPassword) {
+    await setCloudPhase('password-unavailable', 'No encryption password available for this run.', {
+      code: 'ERR_NO_PASSWORD',
+      message: 'Encryption password required.',
+    });
+    await recordSchedulerOutcome(
+      trigger,
+      false,
+      new TypedError('ERR_NO_PASSWORD', 'Encryption password required but not available for this run.')
+    );
+    throw new TypedError(
+      'ERR_NO_PASSWORD',
+      'An encryption password is required for this backup (public repository or encryption enabled).'
+    );
+  }
+  if (encRequired && resolvedPassword) await keepSessionPassword(resolvedPassword);
+  return resolvedPassword;
+}
+
+async function collectAndBuildRemoteArtifact({ collectBackup, collectOptions, log, encRequired, password, trigger }) {
+  await setCloudPhase('collecting', 'Collecting browser data…');
+  const backup = await collectBackup((message) => log(message), collectOptions);
+  await setCloudPhase('encrypting', encRequired ? 'Encrypting backup…' : 'Serializing backup…');
+  const payload = encRequired ? await encryptBackup(backup, password) : backup;
+  return makeRemoteArtifact(JSON.stringify(payload), { trigger, browser: backup.generator || null });
+}
+
+async function storeDurableLocalCopy(
+  localProvider,
+  artifact,
+  { keepLocalArtifact, transientRetryCopy, plaintextAllowed, log }
+) {
+  if (!keepLocalArtifact) return;
+  log(transientRetryCopy ? 'saving temporary retry copy…' : 'saving local durable copy…');
+  await localProvider.uploadBackup(artifact, { plaintextAllowed });
+}
+
+async function uploadRemoteArtifact({
+  cfg,
+  provider,
+  artifact,
+  keepLocalArtifact,
+  transientRetryCopy,
+  retryEnabled,
+  plaintextAllowed,
+  trigger,
+  localDownload,
+  localDownloadError,
+  log,
+}) {
+  if (keepLocalArtifact) {
+    await savePendingUpload({
+      id: artifact.id,
+      createdAt: artifact.createdAt,
+      encrypted: artifact.encrypted,
+      sha256Hex: artifact.sha256Hex,
+      sizeBytes: artifact.sizeBytes,
+      trigger,
+      transientLocalCopy: transientRetryCopy,
+      retryCount: 0,
+      retryAt: null,
+      retryCancelled: false,
+    });
+  }
+  await setCloudPhase('uploading', 'Uploading to GitHub…');
+  try {
+    const upload = await provider.uploadBackup(artifact, { plaintextAllowed });
+    log(`remote object verified (sha256 ${upload.sha256Hex.slice(0, 12)}…)`);
+    await updateRemoteManifest(provider, manifestEntryFromArtifact(artifact));
+    if (transientRetryCopy) await new LocalStorageProvider().deleteBackup(artifact.id);
+    await clearPendingUpload();
+    if (cfg.retention.enabled) {
+      await applyRemoteRetention(provider, { keepLast: cfg.retention.keepLast, protectId: artifact.id });
+    }
+    await recordSchedulerOutcome(trigger, true, null, artifact.id);
+    await setCloudPhase('upload-successful', `Backup ${artifact.id} uploaded and verified.`);
+    return {
+      ok: true,
+      artifactId: artifact.id,
+      sizeBytes: artifact.sizeBytes,
+      sha256Hex: artifact.sha256Hex,
+      encrypted: artifact.encrypted,
+      localDownload,
+      localDownloadError,
+      upload,
+      synced: false,
+    };
+  } catch (error) {
+    if (keepLocalArtifact && retryEnabled && isRetryableUploadError(error)) await schedulePendingCloudRetry();
+    const status = statusFromError(error);
+    await setCloudPhase(
+      status || 'upload-failed',
+      keepLocalArtifact
+        ? 'upload failed — retry copy kept locally'
+        : 'upload failed — no local retry copy was requested',
+      { code: errCode(error), message: error.message }
+    );
+    await recordSchedulerOutcome(trigger, false, error);
+    error.localDownload = localDownload;
+    error.localDownloadError = localDownloadError;
+    throw error;
+  }
+}
+
+async function completeLocalBackup(artifact, trigger) {
+  await clearPendingUpload();
+  await recordSchedulerOutcome(trigger, true, null, artifact.id);
+  await setCloudPhase('upload-successful', `Backup ${artifact.id} stored locally.`);
+  return {
+    ok: true,
+    artifactId: artifact.id,
+    sizeBytes: artifact.sizeBytes,
+    sha256Hex: artifact.sha256Hex,
+    encrypted: artifact.encrypted,
+    upload: { verified: true },
+    synced: false,
+  };
+}
+
 export async function runCloudBackup({
   collectBackup,
   onProgress = () => {
@@ -423,28 +686,10 @@ export async function runCloudBackup({
   downloadArtifact = null,
   autoRetryCloud = null,
 } = {}) {
-  const log = (m) => onProgress(m);
+  const log = (message) => onProgress(message);
   const cfg = await loadCloudConfig();
-  const explicitDestination = destination !== null;
-  const normalizedDestination = normalizeBackupDestination(destination === null ? 'both' : destination);
-  const retryEnabled = autoRetryCloud === null ? cfg.autoRetryCloud : !!autoRetryCloud;
-  const keepLegacyCopy =
-    preserveLocalCopy === null ? !explicitDestination || trigger === 'scheduled' : !!preserveLocalCopy;
-  const transientRetryCopy =
-    shouldKeepTransientRetryCopy({ destination: normalizedDestination, autoRetryCloud: retryEnabled }) &&
-    !keepLegacyCopy;
-  const keepLocalArtifact = cfg.provider === 'local' || keepLegacyCopy || transientRetryCopy;
-
-  if (normalizedDestination === 'local-only') {
-    throw new TypedError(
-      'ERR_DESTINATION',
-      'Local-only backups are downloaded directly and do not use the cloud backup pipeline.'
-    );
-  }
-  if (explicitDestination && cfg.provider === 'local') {
-    throw new TypedError('ERR_DESTINATION', 'Choose GitHub as the provider for Cloud only or Both backups.');
-  }
-
+  const policy = resolveBackupPolicy(cfg, { destination, trigger, preserveLocalCopy, autoRetryCloud });
+  assertBackupDestination(cfg, policy);
   if (!isConfigured(cfg)) {
     await setCloudPhase('not-configured', 'Cloud backup is not configured.');
     throw new TypedError(
@@ -454,212 +699,60 @@ export async function runCloudBackup({
   }
 
   const provider = createProviderFromConfig(cfg);
+  const repoInfo = await connectCloudProvider(cfg, provider, policy.retryEnabled, trigger, log);
+  const encryption = resolveEncryptionPolicy(cfg, repoInfo, plaintextAck);
+  const pendingResult = await handlePendingCloudUpload({
+    provider,
+    trigger,
+    normalizedDestination: policy.normalizedDestination,
+    downloadArtifact,
+    encRequired: encryption.encRequired,
+    plaintextAllowed: encryption.plaintextAllowed,
+    log,
+  });
+  if (pendingResult) return pendingResult;
 
-  // 1) connect + repository visibility
-  log('connecting to ' + (cfg.provider === 'local' ? 'local storage' : 'GitHub…'));
-  let repoInfo;
-  try {
-    await provider.connect();
-    repoInfo = provider.repoInfo || null;
-  } catch (e) {
-    const st = statusFromError(e);
-    if (retryEnabled && isRetryableUploadError(e) && (await loadPendingUpload())) await schedulePendingCloudRetry();
-    await setCloudPhase(st || 'upload-failed', 'connect failed', { code: errCode(e), message: e.message });
-    await recordSchedulerOutcome(trigger, false, e);
-    throw e;
-  }
-
-  // 2) encryption decision (public repo => required, enforced again inside the provider)
-  const effEnc = effectiveEncryption(cfg, repoInfo);
-  const encRequired = effEnc !== 'disabled';
-  const plaintextAllowed = effEnc === 'disabled' && plaintextAck === true;
-  if (effEnc === 'disabled' && !plaintextAck) {
-    throw new TypedError(
-      'ERR_PLAINTEXT_NOT_ALLOWED',
-      'Plaintext backup requires an explicit user acknowledgement (private repositories only).'
-    );
-  }
-
-  // 3) pending upload? sync the existing artifact instead of re-collecting.
-  //    This needs NO password — the artifact is already encrypted (if it was).
-  let pending = await loadPendingUpload();
-  if (pending && (trigger === 'manual' || trigger === 'sync-retry')) {
-    pending = { ...pending, retryCount: 0, retryAt: null, retryExhausted: false, retryCancelled: false };
-    await savePendingUpload(pending);
-    try {
-      await chrome.alarms.clear(CLOUD_RETRY_ALARM);
-    } catch (e) {
-      /* ignore */
-    }
-  }
-  const retryTrigger = trigger === 'auto-retry' || trigger === 'sync-retry';
-  if (pending && (sameLocalDay(pending.createdAt, new Date()) || retryTrigger) && pending.encrypted === encRequired) {
-    log('pending upload found — syncing existing artifact (no re-collection)…');
-    try {
-      let localDownload = null;
-      let localDownloadError = null;
-      if (normalizedDestination === 'both' && typeof downloadArtifact === 'function') {
-        try {
-          const stored = await new LocalStorageProvider().downloadBackup(pending.id);
-          const artifact = await makeRemoteArtifact(stored.text, {
-            backupId: pending.id,
-            createdAt: pending.createdAt,
-            trigger,
-          });
-          ({ localDownload, localDownloadError } = await maybeDownloadLocalCopy({
-            destination: normalizedDestination,
-            downloadArtifact,
-            artifact,
-            log,
-          }));
-        } catch (e) {
-          localDownloadError = e && e.message ? e.message : String(e);
-          log(`local download failed: ${localDownloadError}`);
-        }
-      }
-      const res = await syncPendingArtifact({ provider, pending, plaintextAllowed, trigger });
-      await setCloudPhase('upload-successful', `Synced pending artifact ${pending.id}`);
-      return { ...res, localDownload, localDownloadError };
-    } catch (e) {
-      const st = statusFromError(e);
-      if (isRetryableUploadError(e)) await schedulePendingCloudRetry();
-      await setCloudPhase(st || 'upload-failed', 'pending sync failed', { code: errCode(e), message: e.message });
-      await recordSchedulerOutcome(trigger, false, e);
-      throw e;
-    }
-  }
-  if (pending && !sameLocalDay(pending.createdAt, new Date())) {
-    if (pending.transientLocalCopy) {
-      try {
-        await new LocalStorageProvider().deleteBackup(pending.id);
-      } catch (e) {
-        /* stale retry artifact cleanup is best-effort */
-      }
-    }
-    await clearPendingUpload(); // stale pending from a previous day: discard
-  }
-
-  // 4) password availability BEFORE any data collection (scheduled runs must
-  //    not collect data they cannot encrypt)
-  let pw = password;
-  if (encRequired && !pw && useSessionPassword) pw = await readSessionPassword();
-  if (encRequired && !pw) {
-    await setCloudPhase('password-unavailable', 'No encryption password available for this run.', {
-      code: 'ERR_NO_PASSWORD',
-      message: 'Encryption password required.',
-    });
-    await recordSchedulerOutcome(
-      trigger,
-      false,
-      new TypedError('ERR_NO_PASSWORD', 'Encryption password required but not available for this run.')
-    );
-    throw new TypedError(
-      'ERR_NO_PASSWORD',
-      'An encryption password is required for this backup (public repository or encryption enabled).'
-    );
-  }
-  if (encRequired && pw) await keepSessionPassword(pw);
-
-  // 5) collect + finalize
-  await setCloudPhase('collecting', 'Collecting browser data…');
-  const backup = await collectBackup((m) => log(m), collectOptions);
-
-  // 6) serialize + encrypt
-  await setCloudPhase('encrypting', encRequired ? 'Encrypting backup…' : 'Serializing backup…');
-  let artifact;
-  if (encRequired) {
-    const env = await encryptBackup(backup, pw);
-    artifact = await makeRemoteArtifact(JSON.stringify(env), { trigger, browser: backup.generator || null });
-  } else {
-    artifact = await makeRemoteArtifact(JSON.stringify(backup), { trigger, browser: backup.generator || null });
-  }
-
-  // 7) local download (destination 'both'): user-facing copy, never fatal
+  const resolvedPassword = await ensureCloudPassword({
+    password,
+    useSessionPassword,
+    encRequired: encryption.encRequired,
+    trigger,
+  });
+  const artifact = await collectAndBuildRemoteArtifact({
+    collectBackup,
+    collectOptions,
+    log,
+    encRequired: encryption.encRequired,
+    password: resolvedPassword,
+    trigger,
+  });
   const { localDownload, localDownloadError } = await maybeDownloadLocalCopy({
-    destination: normalizedDestination,
+    destination: policy.normalizedDestination,
     downloadArtifact,
     artifact,
     log,
   });
-
   const localProvider = new LocalStorageProvider();
-  if (keepLocalArtifact) {
-    log(transientRetryCopy ? 'saving temporary retry copy…' : 'saving local durable copy…');
-    await localProvider.uploadBackup(artifact, { plaintextAllowed });
-  }
-
-  // 8) remote upload (+ verification inside the provider) — skip for local provider
-  if (cfg.provider !== 'local') {
-    if (keepLocalArtifact)
-      await savePendingUpload({
-        id: artifact.id,
-        createdAt: artifact.createdAt,
-        encrypted: artifact.encrypted,
-        sha256Hex: artifact.sha256Hex,
-        sizeBytes: artifact.sizeBytes,
-        trigger,
-        transientLocalCopy: transientRetryCopy,
-        retryCount: 0,
-        retryAt: null,
-        retryCancelled: false,
-      });
-    await setCloudPhase('uploading', 'Uploading to GitHub…');
-    try {
-      const up = await provider.uploadBackup(artifact, { plaintextAllowed });
-      log(`remote object verified (sha256 ${up.sha256Hex.slice(0, 12)}…)`);
-      // 9) manifest update
-      await updateRemoteManifest(provider, manifestEntryFromArtifact(artifact));
-      if (transientRetryCopy) await localProvider.deleteBackup(artifact.id);
-      await clearPendingUpload();
-
-      // 10) retention (optional, only after verified upload; disabled by default)
-      if (cfg.retention.enabled) {
-        await applyRemoteRetention(provider, { keepLast: cfg.retention.keepLast, protectId: artifact.id });
-      }
-
-      await recordSchedulerOutcome(trigger, true, null, artifact.id);
-      await setCloudPhase('upload-successful', `Backup ${artifact.id} uploaded and verified.`);
-      return {
-        ok: true,
-        artifactId: artifact.id,
-        sizeBytes: artifact.sizeBytes,
-        sha256Hex: artifact.sha256Hex,
-        encrypted: artifact.encrypted,
-        localDownload,
-        localDownloadError,
-        upload: up,
-        synced: false,
-      };
-    } catch (e) {
-      if (keepLocalArtifact && retryEnabled && isRetryableUploadError(e)) await schedulePendingCloudRetry();
-      const st = statusFromError(e);
-      await setCloudPhase(
-        st || 'upload-failed',
-        keepLocalArtifact
-          ? 'upload failed — retry copy kept locally'
-          : 'upload failed — no local retry copy was requested',
-        { code: errCode(e), message: e.message }
-      );
-      await recordSchedulerOutcome(trigger, false, e);
-      e.localDownload = localDownload;
-      e.localDownloadError = localDownloadError;
-      throw e;
-    }
-  }
-
-  // local provider: the durable copy above IS the backup
-  await clearPendingUpload();
-  await recordSchedulerOutcome(trigger, true, null, artifact.id);
-  await setCloudPhase('upload-successful', `Backup ${artifact.id} stored locally.`);
-  return {
-    ok: true,
-    artifactId: artifact.id,
-    sizeBytes: artifact.sizeBytes,
-    sha256Hex: artifact.sha256Hex,
-    encrypted: artifact.encrypted,
-    upload: { verified: true },
-    synced: false,
-  };
+  await storeDurableLocalCopy(localProvider, artifact, {
+    keepLocalArtifact: policy.keepLocalArtifact,
+    transientRetryCopy: policy.transientRetryCopy,
+    plaintextAllowed: encryption.plaintextAllowed,
+    log,
+  });
+  if (cfg.provider === 'local') return completeLocalBackup(artifact, trigger);
+  return uploadRemoteArtifact({
+    cfg,
+    provider,
+    artifact,
+    keepLocalArtifact: policy.keepLocalArtifact,
+    transientRetryCopy: policy.transientRetryCopy,
+    retryEnabled: policy.retryEnabled,
+    plaintextAllowed: encryption.plaintextAllowed,
+    trigger,
+    localDownload,
+    localDownloadError,
+    log,
+  });
 }
 
 // Re-sync an artifact that was collected+stored locally earlier but whose
@@ -739,13 +832,6 @@ export async function beginScheduledRun() {
   return state;
 }
 
-export async function endScheduledRun() {
-  const state = await loadSchedulerState();
-  state.running = false;
-  state.runningSince = null;
-  await saveSchedulerState(state);
-}
-
 // ---------------- restore path ----------------
 
 export async function listCloudBackups() {
@@ -792,7 +878,7 @@ export async function downloadAndValidateBackup(ref, { password = null } = {}) {
 
 // Runs ONLY after a verified upload. Deletes the OLDEST remote artifacts beyond
 // keepLast (never the just-uploaded one), then rewrites the manifest.
-export async function applyRemoteRetention(provider, { keepLast = 30, protectId = null } = {}) {
+async function applyRemoteRetention(provider, { keepLast = 30, protectId = null } = {}) {
   const { manifest } = await provider.readManifest();
   if (!manifest || manifest.backups.length <= keepLast) return { deleted: 0 };
   const sorted = manifest.backups.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));

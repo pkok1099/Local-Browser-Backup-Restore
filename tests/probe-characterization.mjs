@@ -103,4 +103,22 @@ assert.equal(events[0].details.parentId, '2');
 assert.equal(events[1].details.dateAdded, 1000);
 assert.deepEqual(events[8].details.partitionKey, { topLevelSite: 'https://bbr-probe.example/' });
 assert.equal(entries.size, 0, 'the temporary reading-list item is cleaned up');
+
+const probeFailures = [];
+const eventCountBeforeFailure = events.length;
+fakeChrome.bookmarks.create = async () => {
+  throw new Error('bookmark probe denied');
+};
+const partial = await runProbes({
+  onError: (level, category, message, context) => probeFailures.push({ level, category, message, context }),
+});
+assert.equal(partial.bookmarksCreateHonorsDateAdded, 'throws: bookmark probe denied');
+assert.equal(partial.historyAddUrl.works, true, 'history probe still runs after bookmark probe failure');
+assert.ok(events.slice(eventCountBeforeFailure).some((event) => event.op === 'history.addUrl'));
+assert.ok(
+  probeFailures.some(
+    (entry) => entry.level === 'ERROR' && entry.category === 'SYSTEM' && entry.context.probe === 'bookmarks'
+  ),
+  'bookmark category failure is logged'
+);
 console.log('PASS runProbes characterization: output shape, probe inputs, and side-effect order');
