@@ -5,8 +5,9 @@
 // toggle, token-safe settings import/export, retry status + cancel, restore
 // and password flows.
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { cp, copyFile, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 
 const root = resolve(import.meta.dirname, '..');
@@ -49,17 +50,44 @@ try {
     // Compare request sets instead of relying on generated chunk filenames.
     const extensionPrefix = `chrome-extension://${extensionId}/`;
     const dashboardScripts = [];
+    const scriptBodyBytes = new Map();
+    const scriptBodyReads = [];
     page.on('request', (request) => {
       if (request.resourceType() === 'script' && request.url().startsWith(extensionPrefix)) {
         dashboardScripts.push(request.url());
+      }
+    });
+    page.on('response', (response) => {
+      const request = response.request();
+      if (request.resourceType() === 'script' && request.url().startsWith(extensionPrefix)) {
+        scriptBodyReads.push(
+          response.body().then((body) => scriptBodyBytes.set(request.url(), body.byteLength)).catch(() => {})
+        );
       }
     });
     await page.goto(`chrome-extension://${extensionId}/dashboard.html#/ringkasan`);
     await page.locator('#local-backup').waitFor();
     await page.waitForFunction(() => typeof window.__api === 'object');
     await page.evaluate(() => { window.__dashboardApiRef = window.__api; });
+    // Let startup idle work settle, then measure scripts fetched before navigation.
+    await page.waitForTimeout(1800);
+    await Promise.all(scriptBodyReads);
     const initialScripts = new Set(dashboardScripts);
     assert.ok(initialScripts.size > 0, 'dashboard entry script should load on the initial route');
+    const routeChunkPattern = /\/chunks\/(?:SettingsPage|ResultsPage|FailuresPage|LogPage|MorePage)-/;
+    assert.deepEqual(
+      [...initialScripts].filter((url) => routeChunkPattern.test(url)),
+      [],
+      'noninitial route chunks must not load before navigation'
+    );
+    const missingInitialSizes = [...initialScripts].filter((url) => !scriptBodyBytes.has(url));
+    assert.deepEqual(missingInitialSizes, [], 'every initial dashboard script should have a measured response body');
+    const initialScriptBytes = [...initialScripts].reduce((total, url) => total + scriptBodyBytes.get(url), 0);
+    assert.ok(
+      initialScriptBytes <= 300 * 1024,
+      `initial dashboard JavaScript should stay around 300 KiB or less; measured ${initialScriptBytes} bytes`
+    );
+    console.log(`PASS startup JavaScript payload: ${initialScriptBytes} bytes; noninitial route chunks absent`);
 
     const visitLazyRoute = async (hash, ready, label) => {
       const before = new Set(dashboardScripts);
@@ -228,6 +256,55 @@ try {
     await page.close();
   } finally {
     await extensionContext.close();
+  }
+
+  // Fault-inject a missing route chunk in an isolated build copy. Recovery must
+  // be one-shot, preserve the route hash, and offer a working manual retry.
+  const failureBuildDir = await mkdtemp(join(tmpdir(), 'bbr-route-chunk-failure-'));
+  let failureContext;
+  try {
+    await cp(buildDir, failureBuildDir, { recursive: true });
+    const settingsChunkName = (await readdir(join(failureBuildDir, 'chunks'))).find((name) => name.startsWith('SettingsPage-'));
+    assert.ok(settingsChunkName, 'the build should contain the settings route chunk');
+    const copiedChunk = join(failureBuildDir, 'chunks', settingsChunkName);
+    const originalChunk = join(buildDir, 'chunks', settingsChunkName);
+    await rm(copiedChunk);
+
+    failureContext = await chromium.launchPersistentContext('', {
+      ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
+      headless: !!process.env.CI_HEADLESS,
+      viewport: { width: 900, height: 800 },
+      ignoreDefaultArgs: ['--disable-extensions'],
+      args: ['--no-sandbox', `--disable-extensions-except=${failureBuildDir}`, `--load-extension=${failureBuildDir}`]
+    });
+    const failureWorker = failureContext.serviceWorkers()[0] || await failureContext.waitForEvent('serviceworker', { timeout: 15000 });
+    const failureExtensionId = new URL(failureWorker.url()).host;
+    const failurePage = await failureContext.newPage();
+    let routeDocumentNavigations = 0;
+    failurePage.on('framenavigated', (frame) => {
+      if (frame === failurePage.mainFrame() && frame.url().endsWith('/dashboard.html#/pengaturan')) {
+        routeDocumentNavigations += 1;
+      }
+    });
+    await failurePage.goto(`chrome-extension://${failureExtensionId}/dashboard.html#/pengaturan`);
+    await failurePage.getByRole('alert').waitFor({ timeout: 15000 });
+    assert.ok(routeDocumentNavigations >= 2, 'a failed route chunk should trigger one automatic dashboard reload');
+    assert.deepEqual(
+      await failurePage.evaluate(() => ({
+        hash: location.hash,
+        retryGuard: sessionStorage.getItem('bbr:lazy-route-retry:pengaturan')
+      })),
+      { hash: '#/pengaturan', retryGuard: '1' },
+      'the fallback should preserve the route hash and stop automatic reload loops'
+    );
+    await copyFile(originalChunk, copiedChunk);
+    await failurePage.getByRole('button', { name: 'Muat ulang dan coba lagi' }).click();
+    await failurePage.locator('#site-data-count').waitFor({ timeout: 20000 });
+    assert.equal(await failurePage.evaluate(() => location.hash), '#/pengaturan', 'manual retry should keep the requested route');
+    console.log('PASS lazy route failure: one guarded reload, visible fallback, hash preserved, manual retry recovered');
+  } finally {
+    if (failureContext) await failureContext.close();
+    await rm(failureBuildDir, { recursive: true, force: true });
   }
 } finally {
   await browser.close();

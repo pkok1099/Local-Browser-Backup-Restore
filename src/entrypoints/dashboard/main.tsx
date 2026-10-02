@@ -27,8 +27,15 @@ function logPreviousSessionCleanup(level: string, category: string, message: str
 }
 
 function cleanupPreviousSession() {
-  void import('@/lib/sitedata')
-    .then(({ cleanupPreviousSessionTabs }) => cleanupPreviousSessionTabs(logPreviousSessionCleanup))
+  void chrome.storage.local
+    .get('bbr:site-data-owned-tabs')
+    .then((kv) => {
+      const rec: unknown = kv && kv['bbr:site-data-owned-tabs'];
+      if (!isOwnedTabsRecord(rec) || rec.tabIds.length === 0) return;
+      return import('@/lib/sitedata').then(({ cleanupPreviousSessionTabs }) =>
+        cleanupPreviousSessionTabs(logPreviousSessionCleanup)
+      );
+    })
     .catch(() => {});
 }
 
