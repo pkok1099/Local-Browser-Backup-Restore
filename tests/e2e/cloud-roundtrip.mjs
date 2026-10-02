@@ -104,6 +104,14 @@ try {
   assert.equal(corrupted.code, 'ERR_CHECKSUM_MISMATCH', 'tampered remote artifact should fail the manifest digest check');
   sim.tamper(bbrPath, () => originalRemote);
 
+  const downloaded = must(
+    await apiCall(page, `api.cloud.download(a.refId, { password: a.password })`, { refId, password: PASSWORD }),
+    'cloud.download (valid)'
+  );
+  assert.equal(downloaded.encrypted, true);
+  assert.equal(downloaded.formatVersion, 2, 'decrypted cloud payload should be a v2 backup, not a collector wrapper');
+  assert.ok(downloaded.counts.bookmarks >= BOOKMARK_SEED.length, 'downloaded backup should contain seeded bookmarks');
+
   const restored = must(
     await apiCall(page, `api.cloud.restoreFromCloud(a.refId, { password: a.password, options: a.options })`, { refId, password: PASSWORD, options: { bookmarks: { enabled: true } } }),
     'cloud.restoreFromCloud'
