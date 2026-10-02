@@ -1,0 +1,18 @@
+#!/bin/sh
+# Pre-commit hook: runs linter and tests.
+# Install: cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# (Requires git; this repo is not git-initialized, so the hook is manual for now.)
+
+npm run lint
+if [ $? -ne 0 ]; then
+  echo "❌ lint failed — commit aborted"
+  exit 1
+fi
+
+npm test 2>&1 | tail -5
+if [ $? -ne 0 ]; then
+  echo "❌ tests failed — commit aborted"
+  exit 1
+fi
+
+echo "✅ pre-commit checks passed"
