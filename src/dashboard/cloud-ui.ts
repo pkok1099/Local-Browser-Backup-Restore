@@ -567,6 +567,5 @@ export async function init() {
     subline: `Chromium ${getChromeVersion()} · extension v${chrome.runtime.getManifest().version} · local by default — cloud upload only if you enable it`,
   }));
   await loadCloudConfigIntoUI();
-  appendLog('dashboard ready');
   await autoStart();
 }
