@@ -1,0 +1,1 @@
+{"compilerOptions":{"checkJs":false},"extends":"./tsconfig.json","include":[".wxt/wxt.d.ts",".wxt/types/**/*.d.ts","src","wxt.config.ts"]}

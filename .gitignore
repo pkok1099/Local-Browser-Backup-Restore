@@ -1,0 +1,11 @@
+node_modules/
+.output/
+.wxt/
+build/
+dist/
+coverage/
+playwright-report/
+test-results/
+stats.html
+*.log
+.DS_Store
