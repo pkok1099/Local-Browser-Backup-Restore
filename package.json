@@ -11,7 +11,7 @@
     "zip": "wxt zip",
     "compile": "tsc --noEmit",
     "prepare": "husky",
-    "test:node": "node tests/cloud-retry.mjs && node tests/schedule-settings.mjs && node tests/restore-tabs.mjs && node tests/restore-tabs-android.mjs && node tests/collect-selection.mjs && node tests/site-data-origins.mjs && node tests/cloud-provider-guard.mjs && node tests/no-raw-tab-remove.mjs && node tests/sitedata-tab-cleanup.mjs && node tests/theme-mode.mjs && node tests/site-log.mjs && node tests/site-exclude.mjs && node tests/no-circular-import.mjs && node tests/verify-scan-failed.mjs",
+    "test:node": "node tests/cloud-retry.mjs && node tests/schedule-settings.mjs && node tests/restore-tabs.mjs && node tests/restore-tabs-android.mjs && node tests/collect-selection.mjs && node tests/site-data-origins.mjs && node tests/cloud-provider-guard.mjs && node tests/no-raw-tab-remove.mjs && node tests/sitedata-tab-cleanup.mjs && node tests/cloud-backup-characterization.mjs && node tests/probe-characterization.mjs && node tests/theme-mode.mjs && node tests/site-log.mjs && node tests/site-exclude.mjs && node tests/no-circular-import.mjs && node tests/verify-scan-failed.mjs",
     "test:ui": "node tests/extension-ui.mjs",
     "test:e2e": "node tests/e2e/local-roundtrip.mjs && node tests/e2e/cloud-roundtrip.mjs && node tests/e2e/scheduler-roundtrip.mjs && node tests/e2e/sitedata-tabs.mjs && node tests/e2e/theme-toggle.mjs",
     "test": "npm run test:node",
