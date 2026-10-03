@@ -29,15 +29,19 @@ export function buildSettingsExport(rawConfig) {
 function validateSettingsConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Settings config must be an object.');
-  if (!['github', 'local'].includes(value.provider)) throw new Error('Settings provider is invalid.');
+  if (!['github', 'local'].includes(value.provider))
+    throw new Error('Settings provider is invalid.');
   if (!['enabled', 'disabled'].includes(value.encryption))
     throw new Error('Settings encryption preference is invalid.');
-  if (typeof value.autoRetryCloud !== 'boolean') throw new Error('Settings retry preference is invalid.');
+  if (typeof value.autoRetryCloud !== 'boolean')
+    throw new Error('Settings retry preference is invalid.');
   const gh = value.github;
   if (
     !gh ||
     typeof gh !== 'object' ||
-    ['owner', 'repo', 'branch', 'basePath'].some((key) => typeof gh[key] !== 'string')
+    ['owner', 'repo', 'branch', 'basePath'].some(
+      (key) => typeof gh[key] !== 'string'
+    )
   ) {
     throw new Error('Settings repository fields are invalid.');
   }
@@ -54,7 +58,9 @@ function validateSettingsConfig(value) {
     schedule.minute < 0 ||
     schedule.minute > 59 ||
     !Array.isArray(schedule.weekdays) ||
-    schedule.weekdays.some((day) => !Number.isInteger(day) || day < 0 || day > 6)
+    schedule.weekdays.some(
+      (day) => !Number.isInteger(day) || day < 0 || day > 6
+    )
   ) {
     throw new Error('Settings schedule is invalid.');
   }
@@ -77,8 +83,14 @@ export function parseSettingsImport(text, currentConfig) {
   } catch {
     throw new Error('Settings file must contain valid JSON.');
   }
-  if (!file || file.format !== SETTINGS_FORMAT || file.version !== SETTINGS_VERSION) {
-    throw new Error(`Unsupported settings version (expected ${SETTINGS_FORMAT} v${SETTINGS_VERSION}).`);
+  if (
+    !file ||
+    file.format !== SETTINGS_FORMAT ||
+    file.version !== SETTINGS_VERSION
+  ) {
+    throw new Error(
+      `Unsupported settings version (expected ${SETTINGS_FORMAT} v${SETTINGS_VERSION}).`
+    );
   }
   validateSettingsConfig(file.config);
   const current = normalizeCloudConfig(currentConfig);

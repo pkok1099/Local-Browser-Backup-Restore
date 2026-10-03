@@ -37,6 +37,13 @@ export const KDF_DEFAULT = Object.freeze({
   saltBytes: 16,
 });
 
+// Upper bound accepted when OPENING a backup. The iteration count comes from
+// the (untrusted) file, and PBKDF2 runs BEFORE the GCM tag is verified —
+// without a cap, a malicious file with iterations: 999999999 hangs the
+// restore in key derivation (DoS). Headroom above KDF_DEFAULT for future
+// OWASP increases; legitimate files never exceed this.
+export const KDF_ITERATIONS_MAX = 2000000;
+
 export const AEAD_DEFAULT = Object.freeze({
   algorithm: 'AES-256-GCM',
   ivBytes: 12,
@@ -69,8 +76,11 @@ export async function finalizeIntegrity(backup) {
   });
   const categories = {};
   const entries = Object.entries(backup.data || {});
-  const digests = await Promise.all(entries.map(([, section]) => sha256Hex(canonicalize(section))));
-  for (let i = 0; i < entries.length; i++) categories[entries[i][0]] = digests[i];
+  const digests = await Promise.all(
+    entries.map(([, section]) => sha256Hex(canonicalize(section)))
+  );
+  for (let i = 0; i < entries.length; i++)
+    categories[entries[i][0]] = digests[i];
   backup.integrity = {
     algorithm: 'sha256',
     canonicalization: 'json-sorted-keys-utf8',
@@ -82,7 +92,11 @@ export async function finalizeIntegrity(backup) {
 }
 
 export async function verifyIntegrity(backup, { skipCategories = false } = {}) {
-  if (!backup || !backup.integrity || typeof backup.integrity.digest !== 'string') {
+  if (
+    !backup ||
+    !backup.integrity ||
+    typeof backup.integrity.digest !== 'string'
+  ) {
     throw new TypedError(
       'ERR_NO_INTEGRITY',
       'Backup has no integrity record — file may have been hand-edited or produced by an unknown tool.'
@@ -112,7 +126,11 @@ export async function verifyIntegrity(backup, { skipCategories = false } = {}) {
     );
   }
   // v1 files have no per-category digests.
-  if (!skipCategories && backup.integrity.categories && typeof backup.integrity.categories === 'object') {
+  if (
+    !skipCategories &&
+    backup.integrity.categories &&
+    typeof backup.integrity.categories === 'object'
+  ) {
     const entries = Object.entries(backup.integrity.categories);
     const digests = await Promise.all(
       entries.map(([name]) => {

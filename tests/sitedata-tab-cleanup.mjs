@@ -24,26 +24,49 @@
 //   J. load signal: tab timeout rate / avg load time over the sliding window
 //      shrinks the effective window before the CPU pegs; the pool never
 //      grants above the effective limit and stops granting after abort.
+//   Q. scan-group placement failure: the owned tab is collected into the
+//      "BBR Site Error" group (never left floating ungrouped), the pipeline
+//      continues, and the owned-only close safety net still applies.
 import assert from 'node:assert/strict';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCount = 2, createDelayMs = 5, attachDelayMs = 0, preExisting = [], readsSucceed = false, duplicateCreateId = false, loadDelayMs = 0, failAttachTimes = 0, failEval = false, storageFailMode = 'none', siteDataErrors = [], opfsError = null, bucketsError = null } = {}) {
+function makeFakeChrome({
+  failCreateFor = new Set(),
+  urlMode = 'scan',
+  originCount = 2,
+  createDelayMs = 5,
+  attachDelayMs = 0,
+  preExisting = [],
+  readsSucceed = false,
+  duplicateCreateId = false,
+  loadDelayMs = 0,
+  failAttachTimes = 0,
+  failEval = false,
+  storageFailMode = 'none',
+  siteDataErrors = [],
+  opfsError = null,
+  bucketsError = null,
+  failGroupCreations = 0,
+} = {}) {
   const created = [];
   const removed = [];
   const ungrouped = [];
   const deletedHistory = [];
   const groupCalls = [];
+  const groupUpdates = [];
   const events = [];
   let nextId = 100;
   let openCount = 0;
   let maxOpen = 0;
   let maxSlotsSeen = 0;
+  let groupCreationsLeftToFail = failGroupCreations;
   const tabsById = new Map();
   let attachFailsLeft = failAttachTimes;
   for (const t of preExisting) tabsById.set(t.id, { ...t });
   const bookmarks = [];
-  for (let i = 0; i < originCount; i++) bookmarks.push({ url: `http://example${i}.com/`, children: [] });
+  for (let i = 0; i < originCount; i++)
+    bookmarks.push({ url: `http://example${i}.com/`, children: [] });
   // Minimal chrome.storage.local mock (checkpoint read/write).
   const storageData = {};
   const storageWrites = [];
@@ -58,12 +81,22 @@ function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCou
       query: async (q = {}) => {
         if (!q || !q.url) return [...tabsById.values()];
         const prefix = String(q.url).replace(/\*$/, '');
-        return [...tabsById.values()].filter((t) => (t.url || '').startsWith(prefix));
+        return [...tabsById.values()].filter((t) =>
+          (t.url || '').startsWith(prefix)
+        );
       },
       create: async ({ url }) => {
-        for (const host of failCreateFor) if (url.startsWith(host)) throw new Error('fake create denied');
+        for (const host of failCreateFor)
+          if (url.startsWith(host)) throw new Error('fake create denied');
         await sleep(createDelayMs); // deterministic overlap between parallel opens
-        const tab = { id: duplicateCreateId ? 100 : nextId++, url, status: 'loading', windowId: 7, groupId: -1, createdAt: Date.now() };
+        const tab = {
+          id: duplicateCreateId ? 100 : nextId++,
+          url,
+          status: 'loading',
+          windowId: 7,
+          groupId: -1,
+          createdAt: Date.now(),
+        };
         tabsById.set(tab.id, tab);
         created.push(tab);
         events.push(`create:${tab.id}`);
@@ -88,19 +121,42 @@ function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCou
         }
         return { ...t, status: 'complete' };
       },
-      remove: async (id) => { removed.push(id); events.push(`remove:${id}`); if (tabsById.delete(id)) openCount--; },
-      ungroup: async (id) => { ungrouped.push(id); const t = tabsById.get(id); if (t) t.groupId = -1; },
+      remove: async (id) => {
+        removed.push(id);
+        events.push(`remove:${id}`);
+        if (tabsById.delete(id)) openCount--;
+      },
+      ungroup: async (id) => {
+        ungrouped.push(id);
+        const t = tabsById.get(id);
+        if (t) t.groupId = -1;
+      },
       group: async ({ tabIds, groupId }) => {
         const ids = Array.isArray(tabIds) ? tabIds : [tabIds]; // real Chrome accepts a single id too
         groupCalls.push({ tabIds: [...ids], groupId });
         events.push(`group:${ids.join(',')}`);
+        // failGroupCreations: fail the first N group CREATIONS (no groupId),
+        // simulating a grouping API failure for the scan group.
+        if (
+          (groupId === undefined || groupId === null) &&
+          groupCreationsLeftToFail > 0
+        ) {
+          groupCreationsLeftToFail--;
+          throw new Error('fake: tabs.group creation denied');
+        }
         const gid = groupId ?? 42;
-        for (const id of ids) { const t = tabsById.get(id); if (t) t.groupId = gid; }
+        for (const id of ids) {
+          const t = tabsById.get(id);
+          if (t) t.groupId = gid;
+        }
         return gid;
       },
     },
     tabGroups: {
-      update: async () => ({}),
+      update: async (id, props) => {
+        groupUpdates.push({ id, ...(props || {}) });
+        return {};
+      },
       get: async (id) => ({ id, title: 'BBR Site Scan' }),
     },
     debugger: {
@@ -111,22 +167,48 @@ function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCou
           attachFailsLeft--;
           chrome.runtime.lastError = { message: 'fake attach denied' };
         } else {
-          chrome.runtime.lastError = readsSucceed ? undefined : { message: 'fake attach denied' };
+          chrome.runtime.lastError = readsSucceed
+            ? undefined
+            : { message: 'fake attach denied' };
         }
         setTimeout(cb, attachDelayMs);
       },
-      detach: (target, cb) => { events.push(`debugger:detach:${target.tabId}`); chrome.runtime.lastError = undefined; setTimeout(cb, 0); },
+      detach: (target, cb) => {
+        events.push(`debugger:detach:${target.tabId}`);
+        chrome.runtime.lastError = undefined;
+        setTimeout(cb, 0);
+      },
       sendCommand: (dbg, method, params, cb) => {
         const expr = (params && params.expression) || '';
-        events.push(expr.includes('__BBR.setTx') ? `read:setTx:${dbg.tabId}` : expr.includes('__BBR.txChunk') ? `read:txChunk:${dbg.tabId}` : `debugger:command:${dbg.tabId}`);
-        if (failEval) { chrome.runtime.lastError = { message: 'fake eval failed' }; setTimeout(() => cb(undefined), 0); return; }
-        if (!readsSucceed) { chrome.runtime.lastError = { message: 'fake sendCommand denied' }; setTimeout(() => cb(undefined), 0); return; }
+        events.push(
+          expr.includes('__BBR.setTx')
+            ? `read:setTx:${dbg.tabId}`
+            : expr.includes('__BBR.txChunk')
+              ? `read:txChunk:${dbg.tabId}`
+              : `debugger:command:${dbg.tabId}`
+        );
+        if (failEval) {
+          chrome.runtime.lastError = { message: 'fake eval failed' };
+          setTimeout(() => cb(undefined), 0);
+          return;
+        }
+        if (!readsSucceed) {
+          chrome.runtime.lastError = { message: 'fake sendCommand denied' };
+          setTimeout(() => cb(undefined), 0);
+          return;
+        }
         chrome.runtime.lastError = undefined;
         if (expr.includes('__BBR.setTx')) {
           // evalJsonViaTx: first evaluate returns the payload length.
-          setTimeout(() => cb({ result: { type: 'number', value: txPayload.length } }), 0);
+          setTimeout(
+            () => cb({ result: { type: 'number', value: txPayload.length } }),
+            0
+          );
         } else if (expr.includes('__BBR.txChunk')) {
-          setTimeout(() => cb({ result: { type: 'string', value: txPayload } }), 0);
+          setTimeout(
+            () => cb({ result: { type: 'string', value: txPayload } }),
+            0
+          );
         } else {
           // injectPagelib / clearTx — just acknowledge.
           setTimeout(() => cb({ result: { type: 'boolean', value: true } }), 0);
@@ -135,45 +217,83 @@ function makeFakeChrome({ failCreateFor = new Set(), urlMode = 'scan', originCou
     },
     history: {
       search: async () => [],
-      deleteUrl: async ({ url }) => { deletedHistory.push(url); },
+      deleteUrl: async ({ url }) => {
+        deletedHistory.push(url);
+      },
     },
     bookmarks: {
       getTree: async () => [{ children: bookmarks }],
     },
     cookies: { getAllCookieStores: async () => [] },
-    scripting: { executeScript: async () => { events.push('scripting:executeScript'); return []; } },
+    scripting: {
+      executeScript: async () => {
+        events.push('scripting:executeScript');
+        return [];
+      },
+    },
     storage: {
       local: {
-        get: async (key) => { events.push(`storage:get:${key}`); return { [key]: storageData[key] }; },
+        get: async (key) => {
+          events.push(`storage:get:${key}`);
+          return { [key]: storageData[key] };
+        },
         set: async (obj) => {
           for (const key of Object.keys(obj)) events.push(`storage:set:${key}`);
-          if (storageFailMode === 'quota') throw new Error('QUOTA_BYTES quota exceeded');
-          if (storageFailMode === 'error') throw new Error('fake storage write failed');
-          Object.assign(storageData, obj); storageWrites.push(Object.keys(obj));
+          if (storageFailMode === 'quota')
+            throw new Error('QUOTA_BYTES quota exceeded');
+          if (storageFailMode === 'error')
+            throw new Error('fake storage write failed');
+          Object.assign(storageData, obj);
+          storageWrites.push(Object.keys(obj));
         },
-        remove: async (key) => { events.push(`storage:remove:${key}`); delete storageData[key]; },
+        remove: async (key) => {
+          events.push(`storage:remove:${key}`);
+          delete storageData[key];
+        },
       },
     },
     runtime: { getURL: (p) => p, lastError: undefined },
     // no chrome.system — the CPU sampler must degrade gracefully (null).
   };
   return {
-    chrome, created, removed, ungrouped, deletedHistory, groupCalls, events,
+    chrome,
+    created,
+    removed,
+    ungrouped,
+    deletedHistory,
+    groupCalls,
+    groupUpdates,
+    events,
     getMaxOpen: () => maxOpen,
-    noteMaxSlots: (n) => { maxSlotsSeen = Math.max(maxSlotsSeen, n); },
+    noteMaxSlots: (n) => {
+      maxSlotsSeen = Math.max(maxSlotsSeen, n);
+    },
     getMaxSlotsSeen: () => maxSlotsSeen,
     hasTab: (id) => tabsById.has(id),
     getTab: (id) => tabsById.get(id),
     listTabs: () => [...tabsById.values()],
     storageData,
     storageWrites,
-    seedCheckpoint: (origins) => { storageData['bbr:site-data-checkpoint'] = { savedAt: Date.now(), origins }; },
+    seedCheckpoint: (origins) => {
+      storageData['bbr:site-data-checkpoint'] = {
+        savedAt: Date.now(),
+        origins,
+      };
+    },
   };
 }
 
 globalThis.fetch = async () => ({ text: async () => 'globalThis.__BBR = {};' });
 
-const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwnership, createSlotPool, createLoadMonitor, SITE_DATA_CONFIG } = await import('../src/lib/sitedata.js');
+const {
+  collectSiteData,
+  startCpuMonitor,
+  createTabOwnership,
+  createSiteDataOwnership,
+  createSlotPool,
+  createLoadMonitor,
+  SITE_DATA_CONFIG,
+} = await import('../src/lib/sitedata.js');
 
 // Scenario A: 40 origins, window 8, slow reads (backpressure). Peak open
 // tabs must never exceed the window; opens must be parallel; every tab goes
@@ -184,34 +304,87 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   globalThis.chrome = fake.chrome;
   const seenStats = [];
   const section = await collectSiteData(
-    (m, f, st) => { if (st) { seenStats.push(st); fake.noteMaxSlots(st.slotsUsed); } },
+    (m, f, st) => {
+      if (st) {
+        seenStats.push(st);
+        fake.noteMaxSlots(st.slotsUsed);
+      }
+    },
     { scanWindowSize: 8, retryMaxAttempts: 1 }
   );
-  assert.equal(fake.created.length, 40, '40 scan tabs should be created, got ' + fake.created.length);
-  assert.ok(fake.getMaxOpen() <= 8, `hard window: peak open tabs must be <= 8, got ${fake.getMaxOpen()}`);
-  assert.ok(fake.getMaxOpen() > 1, `opens must be parallel, peak was ${fake.getMaxOpen()}`);
-  assert.ok(fake.getMaxSlotsSeen() <= 8, `slots used must never exceed 8, got ${fake.getMaxSlotsSeen()}`);
+  assert.equal(
+    fake.created.length,
+    40,
+    '40 scan tabs should be created, got ' + fake.created.length
+  );
+  assert.ok(
+    fake.getMaxOpen() <= 8,
+    `hard window: peak open tabs must be <= 8, got ${fake.getMaxOpen()}`
+  );
+  assert.ok(
+    fake.getMaxOpen() > 1,
+    `opens must be parallel, peak was ${fake.getMaxOpen()}`
+  );
+  assert.ok(
+    fake.getMaxSlotsSeen() <= 8,
+    `slots used must never exceed 8, got ${fake.getMaxSlotsSeen()}`
+  );
   assert.deepEqual(
     fake.removed.sort((a, b) => a - b),
     fake.created.map((t) => t.id).sort((a, b) => a - b),
     'every created tab must be closed'
   );
-  const bootstraps = fake.groupCalls.filter((c) => c.groupId === undefined || c.groupId === null);
-  assert.equal(bootstraps.length, 1, `exactly one scan group must be created, got ${bootstraps.length}`);
-  assert.ok(fake.created.every((t) => t.groupId === 42), 'every scan tab must land in the scan group');
+  const bootstraps = fake.groupCalls.filter(
+    (c) => c.groupId === undefined || c.groupId === null
+  );
+  assert.equal(
+    bootstraps.length,
+    1,
+    `exactly one scan group must be created, got ${bootstraps.length}`
+  );
+  assert.ok(
+    fake.created.every((t) => t.groupId === 42),
+    'every scan tab must land in the scan group'
+  );
   for (const st of seenStats) {
-    assert.ok(st.slotsUsed <= st.slotsTotal, `slotsUsed (${st.slotsUsed}) must never exceed slotsTotal (${st.slotsTotal})`);
-    assert.ok(st.inGroup <= st.slotsTotal, `inGroup (${st.inGroup}) must never exceed the window (${st.slotsTotal})`);
+    assert.ok(
+      st.slotsUsed <= st.slotsTotal,
+      `slotsUsed (${st.slotsUsed}) must never exceed slotsTotal (${st.slotsTotal})`
+    );
+    assert.ok(
+      st.inGroup <= st.slotsTotal,
+      `inGroup (${st.inGroup}) must never exceed the window (${st.slotsTotal})`
+    );
     assert.equal(st.windowMax, 8, 'configured window must reach the collector');
   }
-  assert.deepEqual(Object.keys(section.origins || {}), [], 'reads fail in the fake (attach denied)');
-  assert.ok((section.notes || []).some((n) => n.includes('read failed')), 'read failures should be noted');
+  assert.deepEqual(
+    Object.keys(section.origins || {}),
+    [],
+    'reads fail in the fake (attach denied)'
+  );
+  assert.ok(
+    (section.notes || []).some((n) => n.includes('read failed')),
+    'read failures should be noted'
+  );
   // (c) no scan tabs left behind: nothing carrying the scan marker may remain.
-  const leftovers = fake.listTabs().filter((t) => (t.url || '').includes('/__bbr_site_scan__'));
-  assert.deepEqual(leftovers, [], 'no scan tabs may remain after the crawl, got: ' + JSON.stringify(leftovers.map((t) => t.id)));
+  const leftovers = fake
+    .listTabs()
+    .filter((t) => (t.url || '').includes('/__bbr_site_scan__'));
+  assert.deepEqual(
+    leftovers,
+    [],
+    'no scan tabs may remain after the crawl, got: ' +
+      JSON.stringify(leftovers.map((t) => t.id))
+  );
   // (d) UI setting untouched: the checkpoint is cleared on success.
-  assert.equal(fake.storageData['bbr:site-data-checkpoint'], undefined, 'checkpoint must be cleared after a successful crawl');
-  console.log('PASS scenario A: hard window respected, parallel opens, single group, clean teardown');
+  assert.equal(
+    fake.storageData['bbr:site-data-checkpoint'],
+    undefined,
+    'checkpoint must be cleared after a successful crawl'
+  );
+  console.log(
+    'PASS scenario A: hard window respected, parallel opens, single group, clean teardown'
+  );
 }
 
 // Scenario B: the user takes over a scan tab mid-scan — it must never be
@@ -219,17 +392,33 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
 {
   const fake = makeFakeChrome({ urlMode: 'taken-over' });
   globalThis.chrome = fake.chrome;
-  const section = await collectSiteData(null, { scanWindowSize: 4, retryMaxAttempts: 1 });
-  assert.equal(fake.created.length, 2, 'two scan tabs should be created, got ' + fake.created.length);
+  const section = await collectSiteData(null, {
+    scanWindowSize: 4,
+    retryMaxAttempts: 1,
+  });
+  assert.equal(
+    fake.created.length,
+    2,
+    'two scan tabs should be created, got ' + fake.created.length
+  );
   assert.deepEqual(fake.removed, [], 'a taken-over tab must never be closed');
   assert.deepEqual(
     fake.ungrouped.sort((a, b) => a - b),
     fake.created.map((t) => t.id).sort((a, b) => a - b),
     'taken-over tabs must be ungrouped so the group limit stays exact'
   );
-  const untouched = (section.notes || []).filter((n) => n.includes('left scan tab for') && n.includes('untouched'));
-  assert.equal(untouched.length, 2, 'notes should record both untouched tabs, got: ' + JSON.stringify(section.notes));
-  console.log('PASS scenario B: taken-over scan tabs are never closed, slots released');
+  const untouched = (section.notes || []).filter(
+    (n) => n.includes('left scan tab for') && n.includes('untouched')
+  );
+  assert.equal(
+    untouched.length,
+    2,
+    'notes should record both untouched tabs, got: ' +
+      JSON.stringify(section.notes)
+  );
+  console.log(
+    'PASS scenario B: taken-over scan tabs are never closed, slots released'
+  );
 }
 
 // Scenario C: tabs vanish before becoming ready — skipped cleanly, no errors.
@@ -237,12 +426,21 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   const fake = makeFakeChrome({ urlMode: 'throw' });
   globalThis.chrome = fake.chrome;
   const section = await collectSiteData(null, { retryMaxAttempts: 1 });
-  assert.equal(fake.created.length, 2, 'two scan tabs should be created, got ' + fake.created.length);
+  assert.equal(
+    fake.created.length,
+    2,
+    'two scan tabs should be created, got ' + fake.created.length
+  );
   assert.deepEqual(fake.removed, [], 'vanished tabs need no closing');
   assert.deepEqual(fake.ungrouped, [], 'vanished tabs need no ungrouping');
   assert.ok(
-    (section.notes || []).some((n) => n.includes('http://example0.com') && n.includes('did not finish loading')),
-    'notes should record the skipped origin, got: ' + JSON.stringify(section.notes)
+    (section.notes || []).some(
+      (n) =>
+        n.includes('http://example0.com') &&
+        n.includes('did not finish loading')
+    ),
+    'notes should record the skipped origin, got: ' +
+      JSON.stringify(section.notes)
   );
   console.log('PASS scenario C: vanished scan tabs are skipped cleanly');
 }
@@ -254,7 +452,8 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   const waitFor = async (cond, what) => {
     const t0 = Date.now();
     while (!cond()) {
-      if (Date.now() - t0 > 8000) throw new Error('timeout waiting for: ' + what);
+      if (Date.now() - t0 > 8000)
+        throw new Error('timeout waiting for: ' + what);
       await sleep(5);
     }
   };
@@ -263,7 +462,9 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   const adjustments = [];
   const mon = startCpuMonitor({
     getWindow: () => window,
-    setWindow: (w) => { window = w; },
+    setWindow: (w) => {
+      window = w;
+    },
     maxWindow: 20,
     sampler: async () => 97,
     sampleMs: 5,
@@ -275,13 +476,18 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   await waitFor(() => window === 2, 'halve 5 -> 2 (floor)');
   await sleep(150);
   assert.equal(window, 2, `window must hold at the floor of 2, got ${window}`);
-  assert.ok(adjustments.length >= 3, 'each halving should be reported, got: ' + JSON.stringify(adjustments));
+  assert.ok(
+    adjustments.length >= 3,
+    'each halving should be reported, got: ' + JSON.stringify(adjustments)
+  );
   mon.stop();
   // Rise phase: <70% for ~15s -> +2 per step, capped at the UI setting.
   let w2 = 2;
   const mon2 = startCpuMonitor({
     getWindow: () => w2,
-    setWindow: (w) => { w2 = w; },
+    setWindow: (w) => {
+      w2 = w;
+    },
     maxWindow: 8,
     sampler: async () => 10,
     sampleMs: 5,
@@ -293,7 +499,9 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   await sleep(150);
   assert.equal(w2, 8, `window must never exceed the UI setting, got ${w2}`);
   mon2.stop();
-  console.log('PASS scenario D: adaptive CPU window halves fast, grows slow, respects cap and floor');
+  console.log(
+    'PASS scenario D: adaptive CPU window halves fast, grows slow, respects cap and floor'
+  );
 }
 
 // Scenario E: the UI window option is clamped and reaches the collector.
@@ -301,16 +509,33 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   const seen = [];
   const fake = makeFakeChrome({ originCount: 3 });
   globalThis.chrome = fake.chrome;
-  await collectSiteData((m, f, st) => { if (st) seen.push(st); }, { scanWindowSize: 100, retryMaxAttempts: 1 });
+  await collectSiteData(
+    (m, f, st) => {
+      if (st) seen.push(st);
+    },
+    { scanWindowSize: 100, retryMaxAttempts: 1 }
+  );
   assert.ok(seen.length > 0, 'progress should carry stats');
-  assert.ok(seen.every((st) => st.windowMax === 50 && st.slotsTotal === 50),
-    'scanWindowSize should be clamped to 50, got: ' + JSON.stringify(seen[0]));
+  assert.ok(
+    seen.every((st) => st.windowMax === 50 && st.slotsTotal === 50),
+    'scanWindowSize should be clamped to 50, got: ' + JSON.stringify(seen[0])
+  );
   const seen2 = [];
   globalThis.chrome = makeFakeChrome({ originCount: 3 }).chrome;
-  await collectSiteData((m, f, st) => { if (st) seen2.push(st); }, { scanWindowSize: 1, retryMaxAttempts: 1 });
-  assert.ok(seen2.every((st) => st.windowMax === 2 && st.slotsTotal === 2),
-    'scanWindowSize should be clamped to a minimum of 2, got: ' + JSON.stringify(seen2[0]));
-  console.log('PASS scenario E: scanWindowSize option is clamped and wired through');
+  await collectSiteData(
+    (m, f, st) => {
+      if (st) seen2.push(st);
+    },
+    { scanWindowSize: 1, retryMaxAttempts: 1 }
+  );
+  assert.ok(
+    seen2.every((st) => st.windowMax === 2 && st.slotsTotal === 2),
+    'scanWindowSize should be clamped to a minimum of 2, got: ' +
+      JSON.stringify(seen2[0])
+  );
+  console.log(
+    'PASS scenario E: scanWindowSize option is clamped and wired through'
+  );
 }
 
 // Scenario F: safeCloseTab refuses anything outside ownedTabIds — no
@@ -324,48 +549,112 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   // Simulate a non-owned tab id entering the close path.
   const st = await ownership.safeCloseTab(424242, 'http://example0.com');
   assert.equal(st, 'refused', 'non-owned tab must be refused');
-  assert.ok(!fake.removed.includes(424242), 'chrome.tabs.remove must NOT be called for a non-owned tab');
+  assert.ok(
+    !fake.removed.includes(424242),
+    'chrome.tabs.remove must NOT be called for a non-owned tab'
+  );
   assert.ok(
     notes.some((n) => n.includes('REFUSED') && n.includes('424242')),
     'the refusal must be logged, got: ' + JSON.stringify(notes)
   );
   // An owned scan tab closes exactly once.
-  const tab = await fake.chrome.tabs.create({ url: 'http://example0.com/__bbr_site_scan__' });
+  const tab = await fake.chrome.tabs.create({
+    url: 'http://example0.com/__bbr_site_scan__',
+  });
   ownership.own(tab.id);
   const st2 = await ownership.safeCloseTab(tab.id, 'http://example0.com');
   assert.equal(st2, 'closed', 'owned scan tab should close');
-  assert.ok(fake.removed.includes(tab.id), 'chrome.tabs.remove must be called for the owned tab');
+  assert.ok(
+    fake.removed.includes(tab.id),
+    'chrome.tabs.remove must be called for the owned tab'
+  );
   const st3 = await ownership.safeCloseTab(tab.id, 'http://example0.com');
   assert.equal(st3, 'refused', 'a closed tab must not be closed twice');
-  assert.equal(fake.removed.filter((id) => id === tab.id).length, 1, 'remove must be called exactly once');
-  console.log('PASS scenario F: safeCloseTab refuses non-owned tabs and closes owned ones exactly once');
+  assert.equal(
+    fake.removed.filter((id) => id === tab.id).length,
+    1,
+    'remove must be called exactly once'
+  );
+  console.log(
+    'PASS scenario F: safeCloseTab refuses non-owned tabs and closes owned ones exactly once'
+  );
 }
 
 // Scenario G: a pre-existing user tab is reused for reading — it survives
 // the crawl (still open, never grouped/moved/ungrouped), its data is read,
 // and it doesn't count against the slot window.
 {
-  const preTab = { id: 7, url: 'http://example0.com/', status: 'complete', windowId: 7, groupId: -1 };
-  const fake = makeFakeChrome({ originCount: 2, preExisting: [preTab], readsSucceed: true });
+  const preTab = {
+    id: 7,
+    url: 'http://example0.com/',
+    status: 'complete',
+    windowId: 7,
+    groupId: -1,
+  };
+  const fake = makeFakeChrome({
+    originCount: 2,
+    preExisting: [preTab],
+    readsSucceed: true,
+  });
   globalThis.chrome = fake.chrome;
   const seenStats = [];
   const section = await collectSiteData(
-    (m, f, st) => { if (st) { seenStats.push(st); fake.noteMaxSlots(st.slotsUsed); } },
+    (m, f, st) => {
+      if (st) {
+        seenStats.push(st);
+        fake.noteMaxSlots(st.slotsUsed);
+      }
+    },
     { scanWindowSize: 2, retryMaxAttempts: 1 }
   );
-  assert.ok(fake.hasTab(7), 'the pre-existing tab must still be open after the crawl');
-  assert.ok(!fake.removed.includes(7), 'the pre-existing tab must never be closed');
-  assert.ok(!fake.ungrouped.includes(7), 'the pre-existing tab must never be ungrouped');
-  assert.equal(fake.getTab(7).groupId, -1, 'the pre-existing tab must never be put in the scan group');
+  assert.ok(
+    fake.hasTab(7),
+    'the pre-existing tab must still be open after the crawl'
+  );
+  assert.ok(
+    !fake.removed.includes(7),
+    'the pre-existing tab must never be closed'
+  );
+  assert.ok(
+    !fake.ungrouped.includes(7),
+    'the pre-existing tab must never be ungrouped'
+  );
+  assert.equal(
+    fake.getTab(7).groupId,
+    -1,
+    'the pre-existing tab must never be put in the scan group'
+  );
   const reused = section.origins['http://example0.com'];
-  assert.ok(reused && reused.fromOpenTab === true, 'the pre-existing tab should be marked as reused');
-  assert.equal(reused.localStorage && reused.localStorage.reuse_key, 'reuse_value', 'data must actually be read from the pre-existing tab');
+  assert.ok(
+    reused && reused.fromOpenTab === true,
+    'the pre-existing tab should be marked as reused'
+  );
+  assert.equal(
+    reused.localStorage && reused.localStorage.reuse_key,
+    'reuse_value',
+    'data must actually be read from the pre-existing tab'
+  );
   const scanned = section.origins['http://example1.com'];
-  assert.ok(scanned && scanned.fromOpenTab === false, 'origins without an open tab use a scan tab');
-  assert.equal(fake.created.length, 1, 'only one scan tab should be created, got ' + fake.created.length);
-  assert.ok(fake.getMaxSlotsSeen() <= 2, 'slots must respect the window, got ' + fake.getMaxSlotsSeen());
-  assert.ok(fake.created.every((t) => t.groupId === 42), 'the scan tab must land in the scan group');
-  console.log('PASS scenario G: pre-existing tabs are read but never touched, slots only count owned tabs');
+  assert.ok(
+    scanned && scanned.fromOpenTab === false,
+    'origins without an open tab use a scan tab'
+  );
+  assert.equal(
+    fake.created.length,
+    1,
+    'only one scan tab should be created, got ' + fake.created.length
+  );
+  assert.ok(
+    fake.getMaxSlotsSeen() <= 2,
+    'slots must respect the window, got ' + fake.getMaxSlotsSeen()
+  );
+  assert.ok(
+    fake.created.every((t) => t.groupId === 42),
+    'the scan tab must land in the scan group'
+  );
+  console.log(
+    'PASS scenario G: pre-existing tabs are read but never touched, slots only count owned tabs'
+  );
 }
 
 // Scenario H: runtime guard — a close attempt on a non-owned tab aborts the
@@ -384,21 +673,42 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   const progressMsgs = [];
   let section;
   try {
-    section = await collectSiteData(
-      (m) => progressMsgs.push(String(m)),
-      { scanWindowSize: 4 }
-    );
+    section = await collectSiteData((m) => progressMsgs.push(String(m)), {
+      scanWindowSize: 4,
+    });
   } finally {
     SITE_DATA_CONFIG.tabLoadTimeoutMs = origTimeout;
   }
-  assert.equal(section.aborted, true, 'the crawl must abort on a safety violation');
-  assert.ok(section.abortReason && section.abortReason.includes('not owned'), 'abort reason must name the violation, got: ' + section.abortReason);
-  assert.ok(progressMsgs.some((m) => m.includes('ABORTED')), 'an ABORTED warning must reach the dashboard, got: ' + JSON.stringify(progressMsgs.slice(-3)));
-  assert.ok((section.notes || []).some((n) => n.includes('ABORTED')), 'notes must record the abort');
-  assert.ok((section.notes || []).some((n) => n.includes('SAFETY VIOLATION')), 'notes must record the violation');
+  assert.equal(
+    section.aborted,
+    true,
+    'the crawl must abort on a safety violation'
+  );
+  assert.ok(
+    section.abortReason && section.abortReason.includes('not owned'),
+    'abort reason must name the violation, got: ' + section.abortReason
+  );
+  assert.ok(
+    progressMsgs.some((m) => m.includes('ABORTED')),
+    'an ABORTED warning must reach the dashboard, got: ' +
+      JSON.stringify(progressMsgs.slice(-3))
+  );
+  assert.ok(
+    (section.notes || []).some((n) => n.includes('ABORTED')),
+    'notes must record the abort'
+  );
+  assert.ok(
+    (section.notes || []).some((n) => n.includes('SAFETY VIOLATION')),
+    'notes must record the violation'
+  );
   // The refused tab was never passed to chrome.tabs.remove a second time.
-  assert.ok(fake.removed.filter((id) => id === 100).length <= 1, 'a refused close must never reach chrome.tabs.remove');
-  console.log('PASS scenario H: safety violation aborts the crawl loudly, partial results kept');
+  assert.ok(
+    fake.removed.filter((id) => id === 100).length <= 1,
+    'a refused close must never reach chrome.tabs.remove'
+  );
+  console.log(
+    'PASS scenario H: safety violation aborts the crawl loudly, partial results kept'
+  );
 }
 
 // Scenario I: incremental checkpoint — a crawl that doesn't finish leaves a
@@ -411,17 +721,48 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
     'http://example0.com': { localStorage: { a: '1' } },
     'http://example1.com': { localStorage: { b: '2' } },
   });
-  const section = await collectSiteData(null, { scanWindowSize: 4, retryMaxAttempts: 1 });
+  const section = await collectSiteData(null, {
+    scanWindowSize: 4,
+    retryMaxAttempts: 1,
+  });
   const origins = Object.keys(section.origins || {}).sort();
-  assert.deepEqual(origins,
-    ['http://example0.com', 'http://example1.com', 'http://example2.com', 'http://example3.com'],
-    'resumed + fresh origins must all be present, got: ' + JSON.stringify(origins));
-  assert.equal(section.origins['http://example0.com'].localStorage.a, '1', 'checkpointed data must be reused, not re-crawled');
-  assert.equal(fake.created.length, 2, 'only unfinished origins may open scan tabs, got ' + fake.created.length);
-  assert.ok(fake.created.every((t) => t.url.startsWith('http://example2.com') || t.url.startsWith('http://example3.com')),
-    'scan tabs must only cover unfinished origins');
-  assert.equal(fake.storageData['bbr:site-data-checkpoint'], undefined, 'checkpoint must be cleared after a successful crawl');
-  console.log('PASS scenario I: checkpoint resume covers unfinished URLs only, cleared on success');
+  assert.deepEqual(
+    origins,
+    [
+      'http://example0.com',
+      'http://example1.com',
+      'http://example2.com',
+      'http://example3.com',
+    ],
+    'resumed + fresh origins must all be present, got: ' +
+      JSON.stringify(origins)
+  );
+  assert.equal(
+    section.origins['http://example0.com'].localStorage.a,
+    '1',
+    'checkpointed data must be reused, not re-crawled'
+  );
+  assert.equal(
+    fake.created.length,
+    2,
+    'only unfinished origins may open scan tabs, got ' + fake.created.length
+  );
+  assert.ok(
+    fake.created.every(
+      (t) =>
+        t.url.startsWith('http://example2.com') ||
+        t.url.startsWith('http://example3.com')
+    ),
+    'scan tabs must only cover unfinished origins'
+  );
+  assert.equal(
+    fake.storageData['bbr:site-data-checkpoint'],
+    undefined,
+    'checkpoint must be cleared after a successful crawl'
+  );
+  console.log(
+    'PASS scenario I: checkpoint resume covers unfinished URLs only, cleared on success'
+  );
 }
 
 // Scenario J: early load signal + pool discipline.
@@ -434,10 +775,13 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   let window = 20;
   const adjustments = [];
   const loadMon = createLoadMonitor(20);
-  for (let i = 0; i < 10; i++) loadMon.record({ loadMs: 12000, timedOut: i < 4 }); // 40% timeouts, 12s avg
+  for (let i = 0; i < 10; i++)
+    loadMon.record({ loadMs: 12000, timedOut: i < 4 }); // 40% timeouts, 12s avg
   const mon = startCpuMonitor({
     getWindow: () => window,
-    setWindow: (w) => { window = w; },
+    setWindow: (w) => {
+      window = w;
+    },
     maxWindow: 20,
     sampler: async () => 10, // CPU is fine — the load signal fires first
     loadStats: () => loadMon.stats(),
@@ -447,28 +791,41 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   const waitFor = async (cond, what) => {
     const t0 = Date.now();
     while (!cond()) {
-      if (Date.now() - t0 > 8000) throw new Error('timeout waiting for: ' + what);
+      if (Date.now() - t0 > 8000)
+        throw new Error('timeout waiting for: ' + what);
       await sleep(5);
     }
   };
   await waitFor(() => window === 10, 'load-degraded halve 20 -> 10');
-  assert.ok(adjustments.some((r) => r.includes('tab load degraded')), 'the shrink must name the load signal, got: ' + JSON.stringify(adjustments));
+  assert.ok(
+    adjustments.some((r) => r.includes('tab load degraded')),
+    'the shrink must name the load signal, got: ' + JSON.stringify(adjustments)
+  );
   mon.stop();
 
   // (2) pool discipline
   const violations = [];
   let limit = 2;
-  const pool = createSlotPool(() => limit, (r) => violations.push(r));
+  const pool = createSlotPool(
+    () => limit,
+    (r) => violations.push(r)
+  );
   assert.equal(await pool.acquire(), true);
   assert.equal(await pool.acquire(), true);
   let third = null;
-  const p3 = pool.acquire().then((v) => { third = v; });
+  const p3 = pool.acquire().then((v) => {
+    third = v;
+  });
   await sleep(20);
   assert.equal(third, null, 'third acquire must wait while the window is full');
   limit = 1; // shrink below in-flight: must NOT close tabs, just stop new grants
   pool.release(); // used=1; 1 < 1 is false -> waiter stays parked
   await sleep(20);
-  assert.equal(third, null, 'no new grant while owned in-flight >= effective limit');
+  assert.equal(
+    third,
+    null,
+    'no new grant while owned in-flight >= effective limit'
+  );
   assert.equal(pool.used, 1, 'in-flight tabs are not closed by a shrink');
   pool.release(); // used=0 -> grant
   await p3;
@@ -477,20 +834,31 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   pool.release();
   pool.abort();
   assert.equal(await pool.acquire(), false, 'no grants after abort');
-  assert.deepEqual(violations, [], 'no spurious violations, got: ' + JSON.stringify(violations));
+  assert.deepEqual(
+    violations,
+    [],
+    'no spurious violations, got: ' + JSON.stringify(violations)
+  );
   // A waiter parked during abort is woken with false (no hang).
   let limit2 = 2;
-  const pool2 = createSlotPool(() => limit2, (r) => violations.push(r));
+  const pool2 = createSlotPool(
+    () => limit2,
+    (r) => violations.push(r)
+  );
   await pool2.acquire();
   await pool2.acquire();
   let parked = null;
-  const pp = pool2.acquire().then((v) => { parked = v; });
+  const pp = pool2.acquire().then((v) => {
+    parked = v;
+  });
   await sleep(20);
   assert.equal(parked, null, 'third acquire must park');
   pool2.abort();
   await pp;
   assert.equal(parked, false, 'parked acquirers must be released on abort');
-  console.log('PASS scenario J: load signal shrinks early; pool grants respect the effective limit and abort');
+  console.log(
+    'PASS scenario J: load signal shrinks early; pool grants respect the effective limit and abort'
+  );
 }
 
 // Scenario K: failure matrix — a failure at EVERY stage (load timeout, attach
@@ -506,14 +874,34 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
     globalThis.chrome = fake.chrome;
     let lastStats = null;
     const section = await collectSiteData(
-      (m, f, st) => { if (st) lastStats = st; },
+      (m, f, st) => {
+        if (st) lastStats = st;
+      },
       { scanWindowSize: 4, retryMaxAttempts: 1 }
     );
     assert.equal(fake.created.length, 2, 'K1: 2 tabs created');
-    assert.deepEqual(fake.removed.sort(), fake.created.map((t) => t.id).sort(), 'K1: timed-out tabs must be closed');
-    assert.equal(lastStats.slotsUsed, 0, 'K1: all slots released, got ' + lastStats.slotsUsed);
-    assert.deepEqual(fake.listTabs().filter((t) => (t.url || '').includes('/__bbr_site_scan__')), [], 'K1: no scan tabs remain');
-    assert.equal(section.urlStates.filter((u) => u.status === 'fetch-failed').length, 2, 'K1: both origins fetch-failed');
+    assert.deepEqual(
+      fake.removed.sort(),
+      fake.created.map((t) => t.id).sort(),
+      'K1: timed-out tabs must be closed'
+    );
+    assert.equal(
+      lastStats.slotsUsed,
+      0,
+      'K1: all slots released, got ' + lastStats.slotsUsed
+    );
+    assert.deepEqual(
+      fake
+        .listTabs()
+        .filter((t) => (t.url || '').includes('/__bbr_site_scan__')),
+      [],
+      'K1: no scan tabs remain'
+    );
+    assert.equal(
+      section.urlStates.filter((u) => u.status === 'fetch-failed').length,
+      2,
+      'K1: both origins fetch-failed'
+    );
     console.log('PASS scenario K1: load timeout — tab closed, slot released');
   } finally {
     SITE_DATA_CONFIG.tabLoadTimeoutMs = realTimeout;
@@ -524,30 +912,74 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
     globalThis.chrome = fake.chrome;
     let lastStats = null;
     const section = await collectSiteData(
-      (m, f, st) => { if (st) lastStats = st; },
+      (m, f, st) => {
+        if (st) lastStats = st;
+      },
       { scanWindowSize: 4, retryMaxAttempts: 1 }
     );
     assert.equal(fake.created.length, 2, 'K2: 2 tabs created');
-    assert.deepEqual(fake.removed.sort(), fake.created.map((t) => t.id).sort(), 'K2: tabs must be closed after attach failure');
-    assert.equal(lastStats.slotsUsed, 0, 'K2: all slots released, got ' + lastStats.slotsUsed);
-    assert.deepEqual(fake.listTabs().filter((t) => (t.url || '').includes('/__bbr_site_scan__')), [], 'K2: no scan tabs remain');
-    assert.equal(section.urlStates.filter((u) => u.status === 'fetch-failed').length, 2, 'K2: both origins fetch-failed');
+    assert.deepEqual(
+      fake.removed.sort(),
+      fake.created.map((t) => t.id).sort(),
+      'K2: tabs must be closed after attach failure'
+    );
+    assert.equal(
+      lastStats.slotsUsed,
+      0,
+      'K2: all slots released, got ' + lastStats.slotsUsed
+    );
+    assert.deepEqual(
+      fake
+        .listTabs()
+        .filter((t) => (t.url || '').includes('/__bbr_site_scan__')),
+      [],
+      'K2: no scan tabs remain'
+    );
+    assert.equal(
+      section.urlStates.filter((u) => u.status === 'fetch-failed').length,
+      2,
+      'K2: both origins fetch-failed'
+    );
     console.log('PASS scenario K2: attach error — tab closed, slot released');
   }
   // K3: unexpected exception during read (eval fails after attach succeeds).
   {
-    const fake = makeFakeChrome({ originCount: 2, readsSucceed: true, failEval: true });
+    const fake = makeFakeChrome({
+      originCount: 2,
+      readsSucceed: true,
+      failEval: true,
+    });
     globalThis.chrome = fake.chrome;
     let lastStats = null;
     const section = await collectSiteData(
-      (m, f, st) => { if (st) lastStats = st; },
+      (m, f, st) => {
+        if (st) lastStats = st;
+      },
       { scanWindowSize: 4, retryMaxAttempts: 1 }
     );
     assert.equal(fake.created.length, 2, 'K3: 2 tabs created');
-    assert.deepEqual(fake.removed.sort(), fake.created.map((t) => t.id).sort(), 'K3: tabs must be closed after read exception');
-    assert.equal(lastStats.slotsUsed, 0, 'K3: all slots released, got ' + lastStats.slotsUsed);
-    assert.deepEqual(fake.listTabs().filter((t) => (t.url || '').includes('/__bbr_site_scan__')), [], 'K3: no scan tabs remain');
-    assert.equal(section.urlStates.filter((u) => u.status === 'fetch-failed').length, 2, 'K3: both origins fetch-failed');
+    assert.deepEqual(
+      fake.removed.sort(),
+      fake.created.map((t) => t.id).sort(),
+      'K3: tabs must be closed after read exception'
+    );
+    assert.equal(
+      lastStats.slotsUsed,
+      0,
+      'K3: all slots released, got ' + lastStats.slotsUsed
+    );
+    assert.deepEqual(
+      fake
+        .listTabs()
+        .filter((t) => (t.url || '').includes('/__bbr_site_scan__')),
+      [],
+      'K3: no scan tabs remain'
+    );
+    assert.equal(
+      section.urlStates.filter((u) => u.status === 'fetch-failed').length,
+      2,
+      'K3: both origins fetch-failed'
+    );
     console.log('PASS scenario K3: read exception — tab closed, slot released');
   }
 }
@@ -561,28 +993,78 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   globalThis.chrome = fake.chrome;
   let lastStats = null;
   const section = await collectSiteData(
-    (m, f, st) => { if (st) lastStats = st; },
+    (m, f, st) => {
+      if (st) lastStats = st;
+    },
     { scanWindowSize: 4, retryMaxAttempts: 3 }
   );
-  assert.equal(fake.created.length, 6, 'L1: 2 origins x 3 attempts = 6 tabs, got ' + fake.created.length);
-  assert.deepEqual(fake.removed.sort((a, b) => a - b), fake.created.map((t) => t.id).sort((a, b) => a - b), 'L1: every attempt tab must be closed');
-  assert.ok(fake.getMaxOpen() <= 4, `L1: no pile-up across waves, peak open must be <= 4, got ${fake.getMaxOpen()}`);
+  assert.equal(
+    fake.created.length,
+    6,
+    'L1: 2 origins x 3 attempts = 6 tabs, got ' + fake.created.length
+  );
+  assert.deepEqual(
+    fake.removed.sort((a, b) => a - b),
+    fake.created.map((t) => t.id).sort((a, b) => a - b),
+    'L1: every attempt tab must be closed'
+  );
+  assert.ok(
+    fake.getMaxOpen() <= 4,
+    `L1: no pile-up across waves, peak open must be <= 4, got ${fake.getMaxOpen()}`
+  );
   assert.equal(lastStats.slotsUsed, 0, 'L1: all slots released');
-  assert.ok((section.notes || []).some((n) => n.includes('retry phase')), 'L1: retry phases must be noted');
+  assert.ok(
+    (section.notes || []).some((n) => n.includes('retry phase')),
+    'L1: retry phases must be noted'
+  );
   const failed = section.urlStates.filter((u) => u.status === 'fetch-failed');
-  assert.equal(failed.length, 2, 'L1: both origins fetch-failed after exhaustion');
-  assert.ok(failed.every((u) => u.attempts === 3), 'L1: 3 attempts each, got ' + JSON.stringify(failed.map((u) => u.attempts)));
-  console.log('PASS scenario L1: retry waves — old tab closed before new one, no pile-up');
+  assert.equal(
+    failed.length,
+    2,
+    'L1: both origins fetch-failed after exhaustion'
+  );
+  assert.ok(
+    failed.every((u) => u.attempts === 3),
+    'L1: 3 attempts each, got ' + JSON.stringify(failed.map((u) => u.attempts))
+  );
+  console.log(
+    'PASS scenario L1: retry waves — old tab closed before new one, no pile-up'
+  );
 
   // L2: first attempt fails, retry succeeds — no re-fetch needed beyond that.
-  const fake2 = makeFakeChrome({ originCount: 2, readsSucceed: true, failAttachTimes: 2 });
+  const fake2 = makeFakeChrome({
+    originCount: 2,
+    readsSucceed: true,
+    failAttachTimes: 2,
+  });
   globalThis.chrome = fake2.chrome;
-  const section2 = await collectSiteData(() => {}, { scanWindowSize: 4, retryMaxAttempts: 3 });
-  assert.equal(Object.keys(section2.origins || {}).length, 2, 'L2: both origins recovered on retry');
-  assert.equal(fake2.created.length, 4, 'L2: 2 origins x 2 attempts = 4 tabs, got ' + fake2.created.length);
-  assert.deepEqual(fake2.removed.sort((a, b) => a - b), fake2.created.map((t) => t.id).sort((a, b) => a - b), 'L2: all tabs closed');
-  assert.ok(section2.urlStates.every((u) => u.status === 'saved'), 'L2: all origins saved, got ' + JSON.stringify(section2.urlStates.map((u) => u.status)));
-  console.log('PASS scenario L2: retry recovers — failed origin re-fetched with a fresh tab');
+  const section2 = await collectSiteData(() => {}, {
+    scanWindowSize: 4,
+    retryMaxAttempts: 3,
+  });
+  assert.equal(
+    Object.keys(section2.origins || {}).length,
+    2,
+    'L2: both origins recovered on retry'
+  );
+  assert.equal(
+    fake2.created.length,
+    4,
+    'L2: 2 origins x 2 attempts = 4 tabs, got ' + fake2.created.length
+  );
+  assert.deepEqual(
+    fake2.removed.sort((a, b) => a - b),
+    fake2.created.map((t) => t.id).sort((a, b) => a - b),
+    'L2: all tabs closed'
+  );
+  assert.ok(
+    section2.urlStates.every((u) => u.status === 'saved'),
+    'L2: all origins saved, got ' +
+      JSON.stringify(section2.urlStates.map((u) => u.status))
+  );
+  console.log(
+    'PASS scenario L2: retry recovers — failed origin re-fetched with a fresh tab'
+  );
 }
 
 // Scenario M: storage retry queue — checkpoint write failures are never
@@ -590,31 +1072,79 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
 {
   // M1: write errors -> save-failed status, data kept in memory, not counted
   // as done, retry scheduled with backoff (noted, not silent).
-  const fake = makeFakeChrome({ originCount: 2, readsSucceed: true, storageFailMode: 'error' });
+  const fake = makeFakeChrome({
+    originCount: 2,
+    readsSucceed: true,
+    storageFailMode: 'error',
+  });
   globalThis.chrome = fake.chrome;
   let lastStats = null;
   const section = await collectSiteData(
-    (m, f, st) => { if (st) lastStats = st; },
+    (m, f, st) => {
+      if (st) lastStats = st;
+    },
     { scanWindowSize: 4, retryMaxAttempts: 1, checkpointEveryOrigins: 1 }
   );
-  assert.equal(Object.keys(section.origins || {}).length, 2, 'M1: fetched data stays in memory');
+  assert.equal(
+    Object.keys(section.origins || {}).length,
+    2,
+    'M1: fetched data stays in memory'
+  );
   assert.equal(lastStats.fetched, 2, 'M1: 2 fetched');
-  assert.equal(lastStats.done, 0, 'M1: fetched-but-unsaved must NOT count as done, got ' + lastStats.done);
-  assert.ok(section.urlStates.every((u) => u.status === 'save-failed'), 'M1: all origins save-failed, got ' + JSON.stringify(section.urlStates.map((u) => u.status)));
-  assert.ok((section.notes || []).some((n) => n.includes('checkpoint write failed')), 'M1: write failure must be noted, not swallowed');
-  assert.ok((section.notes || []).some((n) => n.includes('retrying with backoff')), 'M1: backoff retry must be scheduled');
-  console.log('PASS scenario M1: storage write failure — save-failed status, data kept in memory, retry scheduled');
+  assert.equal(
+    lastStats.done,
+    0,
+    'M1: fetched-but-unsaved must NOT count as done, got ' + lastStats.done
+  );
+  assert.ok(
+    section.urlStates.every((u) => u.status === 'save-failed'),
+    'M1: all origins save-failed, got ' +
+      JSON.stringify(section.urlStates.map((u) => u.status))
+  );
+  assert.ok(
+    (section.notes || []).some((n) => n.includes('checkpoint write failed')),
+    'M1: write failure must be noted, not swallowed'
+  );
+  assert.ok(
+    (section.notes || []).some((n) => n.includes('retrying with backoff')),
+    'M1: backoff retry must be scheduled'
+  );
+  console.log(
+    'PASS scenario M1: storage write failure — save-failed status, data kept in memory, retry scheduled'
+  );
 
   // M2: quota-full -> no blind retry; the crawl stops safely with a clear
   // warning and the data is kept (it still ships in the backup section).
-  const fake2 = makeFakeChrome({ originCount: 2, readsSucceed: true, storageFailMode: 'quota' });
+  const fake2 = makeFakeChrome({
+    originCount: 2,
+    readsSucceed: true,
+    storageFailMode: 'quota',
+  });
   globalThis.chrome = fake2.chrome;
-  const section2 = await collectSiteData(() => {}, { scanWindowSize: 4, retryMaxAttempts: 1 });
+  const section2 = await collectSiteData(() => {}, {
+    scanWindowSize: 4,
+    retryMaxAttempts: 1,
+  });
   assert.equal(section2.aborted, true, 'M2: quota-full must halt the crawl');
-  assert.ok((section2.notes || []).some((n) => /quota/i.test(n)), 'M2: quota warning must be noted');
-  assert.equal(Object.keys(section2.origins || {}).length, 2, 'M2: data kept in memory despite quota');
-  assert.deepEqual(fake2.listTabs().filter((t) => (t.url || '').includes('/__bbr_site_scan__')), [], 'M2: no scan tabs remain after quota halt');
-  console.log('PASS scenario M2: quota-full — safe stop, clear warning, data kept');
+  assert.ok(
+    (section2.notes || []).some((n) => /quota/i.test(n)),
+    'M2: quota warning must be noted'
+  );
+  assert.equal(
+    Object.keys(section2.origins || {}).length,
+    2,
+    'M2: data kept in memory despite quota'
+  );
+  assert.deepEqual(
+    fake2
+      .listTabs()
+      .filter((t) => (t.url || '').includes('/__bbr_site_scan__')),
+    [],
+    'M2: no scan tabs remain after quota halt'
+  );
+  console.log(
+    'PASS scenario M2: quota-full — safe stop, clear warning, data kept'
+  );
 }
 
 // Scenario N: characterization — configured origin filtering/capping reaches
@@ -624,26 +1154,42 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   const fake = makeFakeChrome({ originCount: 4, readsSucceed: true });
   globalThis.chrome = fake.chrome;
   const progress = [];
-  const section = await collectSiteData((message, fraction, stats) => progress.push({ message, fraction, stats }), {
-    includeOrigins: ['http://example0.com', 'http://example1.com', 'http://example2.com'],
-    excludeOrigins: ['http://example0.com'],
-    maxOrigins: 1,
-    scanWindowSize: 2,
-    retryMaxAttempts: 1,
-    fetchScript: false,
-    excludedSiteDataCategories: ['serviceWorkers'],
-  });
+  const section = await collectSiteData(
+    (message, fraction, stats) => progress.push({ message, fraction, stats }),
+    {
+      includeOrigins: [
+        'http://example0.com',
+        'http://example1.com',
+        'http://example2.com',
+      ],
+      excludeOrigins: ['http://example0.com'],
+      maxOrigins: 1,
+      scanWindowSize: 2,
+      retryMaxAttempts: 1,
+      fetchScript: false,
+      excludedSiteDataCategories: ['serviceWorkers'],
+    }
+  );
   assert.deepEqual(Object.keys(section.origins), ['http://example1.com']);
   assert.equal(section.schemaVersion, 1);
-  assert.equal(section.origins['http://example1.com'].localStorage.reuse_key, 'reuse_value');
+  assert.equal(
+    section.origins['http://example1.com'].localStorage.reuse_key,
+    'reuse_value'
+  );
   assert.deepEqual(section.excludedCategories, ['serviceWorkers']);
   assert.equal(section.urlStates.length, 1);
   assert.equal(section.urlStates[0].status, 'saved');
   assert.equal(section.urlStates[0].attempts, 1);
   assert.ok(section.notes.some((note) => note.includes('capped at 1')));
-  assert.ok(progress.length > 0 && progress.every((item) => item.fraction === null || typeof item.fraction === 'number'));
+  assert.ok(
+    progress.length > 0 &&
+      progress.every(
+        (item) => item.fraction === null || typeof item.fraction === 'number'
+      )
+  );
 
-  const index = (prefix) => fake.events.findIndex((event) => event.startsWith(prefix));
+  const index = (prefix) =>
+    fake.events.findIndex((event) => event.startsWith(prefix));
   const created = index('create:');
   const grouped = index('group:');
   const attached = index('debugger:attach:');
@@ -653,10 +1199,24 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   const removed = index('remove:');
   const checkpointWrite = index('storage:set:bbr:site-data-checkpoint');
   const checkpointClear = index('storage:remove:bbr:site-data-checkpoint');
-  assert.ok(created < grouped && grouped < attached && attached < readStart && readStart < readChunk, 'tab is created/grouped/attached before snapshot reads');
-  assert.ok(readChunk < detached && detached < removed, 'snapshot is read before debugger detach and tab close');
-  assert.ok(removed < checkpointWrite && checkpointWrite < checkpointClear, 'checkpoint persists after scan-tab cleanup, then clears');
-  console.log('PASS scenario N: collectSiteData inputs, output contract, and side-effect order');
+  assert.ok(
+    created < grouped &&
+      grouped < attached &&
+      attached < readStart &&
+      readStart < readChunk,
+    'tab is created/grouped/attached before snapshot reads'
+  );
+  assert.ok(
+    readChunk < detached && detached < removed,
+    'snapshot is read before debugger detach and tab close'
+  );
+  assert.ok(
+    removed < checkpointWrite && checkpointWrite < checkpointClear,
+    'checkpoint persists after scan-tab cleanup, then clears'
+  );
+  console.log(
+    'PASS scenario N: collectSiteData inputs, output contract, and side-effect order'
+  );
 }
 
 // Scenario O: stop callbacks invoked before their forward declarations are initialized fail with stable messages.
@@ -668,11 +1228,27 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
     includeOrigins: ['http://example0.com'],
     scanWindowSize: 2,
     retryMaxAttempts: 1,
-    __testBeforeForwardDeclarationsInitialized({ haltCrawl, requestStop, assertForwardDeclarationInitialized }) {
-      for (const [name, callback] of Object.entries({ haltCrawl, requestStop })) {
-        try { callback(); } catch (error) { observed[name] = error.message; }
+    __testBeforeForwardDeclarationsInitialized({
+      haltCrawl,
+      requestStop,
+      assertForwardDeclarationInitialized,
+    }) {
+      for (const [name, callback] of Object.entries({
+        haltCrawl,
+        requestStop,
+      })) {
+        try {
+          callback();
+        } catch (error) {
+          observed[name] = error.message;
+        }
       }
-      for (const name of ['liveStatus', 'updateWorkers', 'report', 'readyQueue']) {
+      for (const name of [
+        'liveStatus',
+        'updateWorkers',
+        'report',
+        'readyQueue',
+      ]) {
         assert.throws(
           () => assertForwardDeclarationInitialized(name, undefined),
           new Error(`dipanggil sebelum diinisialisasi: ${name}`)
@@ -680,11 +1256,19 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
       }
     },
   });
-  assert.equal(observed.haltCrawl, 'dipanggil sebelum diinisialisasi: liveStatus');
-  assert.equal(observed.requestStop, 'dipanggil sebelum diinisialisasi: liveStatus');
+  assert.equal(
+    observed.haltCrawl,
+    'dipanggil sebelum diinisialisasi: liveStatus'
+  );
+  assert.equal(
+    observed.requestStop,
+    'dipanggil sebelum diinisialisasi: liveStatus'
+  );
   assert.equal(section.aborted, undefined);
   assert.deepEqual(Object.keys(section.origins), ['http://example0.com']);
-  console.log('PASS scenario O: early stop callbacks receive explicit forward-declaration guards');
+  console.log(
+    'PASS scenario O: early stop callbacks receive explicit forward-declaration guards'
+  );
 }
 
 // Scenario P: category failures are logged independently while other data survives.
@@ -706,14 +1290,176 @@ const { collectSiteData, startCpuMonitor, createTabOwnership, createSiteDataOwne
   });
   const snapshot = section.origins['http://example0.com'];
   assert.deepEqual(snapshot.localStorage, { reuse_key: 'reuse_value' });
-  assert.deepEqual(snapshot.errors, ['indexedDB: access denied', 'cacheStorage: unavailable']);
+  assert.deepEqual(snapshot.errors, [
+    'indexedDB: access denied',
+    'cacheStorage: unavailable',
+  ]);
   const categoryFailures = logEntries.filter(
-    (entry) => entry.level === 'ERROR' && entry.category === 'W2' && entry.message.includes('capture failed')
+    (entry) =>
+      entry.level === 'ERROR' &&
+      entry.category === 'W2' &&
+      entry.message.includes('capture failed')
   );
-  assert.deepEqual(categoryFailures.map((entry) => entry.context.category).sort(), ['buckets', 'cacheStorage', 'indexedDB', 'opfs']);
-  assert.ok(categoryFailures.every((entry) => entry.url === 'http://example0.com'));
-  assert.ok(section.notes.some((message) => message.includes('indexedDB capture failed')));
-  console.log('PASS scenario P: category failures logged independently while successful origin data remains');
+  assert.deepEqual(
+    categoryFailures.map((entry) => entry.context.category).sort(),
+    ['buckets', 'cacheStorage', 'indexedDB', 'opfs']
+  );
+  assert.ok(
+    categoryFailures.every((entry) => entry.url === 'http://example0.com')
+  );
+  assert.ok(
+    section.notes.some((message) =>
+      message.includes('indexedDB capture failed')
+    )
+  );
+  console.log(
+    'PASS scenario P: category failures logged independently while successful origin data remains'
+  );
 }
 
-console.log('PASS siteData streaming pipeline: hard window, single group, takeover safety, adaptive CPU');
+// Scenario Q: scan-group placement fails — the owned tab must be collected
+// into the "BBR Site Error" group instead of being left floating ungrouped,
+// the origin still flows through the pipeline (read attempted), and the
+// safety net (owned-only close via safeCloseTab) still applies.
+{
+  const logEntries = [];
+  const fake = makeFakeChrome({ originCount: 1, failGroupCreations: 1 });
+  globalThis.chrome = fake.chrome;
+  const seenStats = [];
+  await collectSiteData(
+    (m, f, st) => {
+      if (st) seenStats.push(st);
+    },
+    {
+      scanWindowSize: 4,
+      retryMaxAttempts: 1,
+      onLogEntry: (entry) => logEntries.push(entry),
+    }
+  );
+  assert.equal(
+    fake.created.length,
+    1,
+    'one scan tab should be created, got ' + fake.created.length
+  );
+  const creations = fake.groupCalls.filter(
+    (c) => c.groupId === undefined || c.groupId === null
+  );
+  assert.equal(
+    creations.length,
+    2,
+    'scan group creation must fail once, then the error group creation must succeed, got ' +
+      creations.length
+  );
+  const errorUpdates = fake.groupUpdates.filter(
+    (u) => u.title === 'BBR Site Error'
+  );
+  assert.equal(
+    errorUpdates.length,
+    1,
+    'exactly one error group must be created, got: ' +
+      JSON.stringify(fake.groupUpdates)
+  );
+  assert.ok(
+    !fake.groupUpdates.some((u) => u.title === 'BBR Site Scan'),
+    'no scan group should be created, got: ' + JSON.stringify(fake.groupUpdates)
+  );
+  const tabId = fake.created[0].id;
+  assert.ok(
+    fake.events.includes(`debugger:attach:${tabId}`),
+    'the pipeline must continue past the grouping failure (Worker 2 reads the tab), events: ' +
+      JSON.stringify(fake.events)
+  );
+  assert.ok(
+    seenStats.some((st) => (st.inErrorGroup || 0) >= 1),
+    'inErrorGroup must be visible in live stats during the crawl'
+  );
+  assert.equal(
+    seenStats[seenStats.length - 1].inErrorGroup || 0,
+    0,
+    'inErrorGroup must return to 0 after the tab is closed'
+  );
+  assert.ok(
+    fake.removed.includes(tabId),
+    'the error-grouped tab is still owned and must be closed via safeCloseTab'
+  );
+  assert.ok(
+    logEntries.some(
+      (e) =>
+        e.level === 'WARN' &&
+        e.category === 'W1' &&
+        e.message.includes('error group')
+    ),
+    'the grouping failure must be logged as a W1 warning, got: ' +
+      JSON.stringify(
+        logEntries.map((e) => e.level + '/' + e.category + ': ' + e.message)
+      )
+  );
+  const leftovers = fake
+    .listTabs()
+    .filter((t) => (t.url || '').includes('/__bbr_site_scan__'));
+  assert.deepEqual(leftovers, [], 'no scan tabs may remain after the crawl');
+  console.log(
+    'PASS scenario Q: grouping failure collects the tab into the error group, pipeline and safety net intact'
+  );
+}
+
+// Scenario R (T2-M1): the pinned scan window is closed by the user mid-crawl.
+// Revalidation must drop the dead pin and the crawl must continue in the
+// active window instead of failing every remaining origin.
+{
+  const fake = makeFakeChrome({ originCount: 3, readsSucceed: true });
+  let windowAlive = true;
+  fake.chrome.windows = {
+    async get(id) {
+      if (!windowAlive) throw new Error('No window with id: ' + id);
+      return { id };
+    },
+  };
+  const origCreate = fake.chrome.tabs.create;
+  const createProps = [];
+  fake.chrome.tabs.create = async (props) => {
+    createProps.push(props);
+    if (props.windowId !== undefined && !windowAlive)
+      throw new Error('No window with id: ' + props.windowId);
+    return origCreate(props);
+  };
+  globalThis.chrome = fake.chrome;
+  // Kill the pinned window after the first tab is created: hook via the log
+  // is complex, so instead kill it from the start — the first create has no
+  // pin yet, so this exercises revalidation on every subsequent create.
+  // NOTE: scanWindowSize 1 makes the creates sequential; with a wide window
+  // they race and all read the pin before the first one lands.
+  windowAlive = false;
+  const section = await collectSiteData(() => {}, {
+    scanWindowSize: 1,
+    retryMaxAttempts: 1,
+  });
+  assert.ok(
+    section.urlStates.every((u) => u.status === 'saved'),
+    'R: all origins must still be saved after the scan window dies, got ' +
+      JSON.stringify(section.urlStates.map((u) => u.status))
+  );
+  assert.deepEqual(
+    fake.removed.sort((a, b) => a - b),
+    fake.created.map((t) => t.id).sort((a, b) => a - b),
+    'R: every created tab must still be closed'
+  );
+  assert.ok(
+    createProps.slice(1).every((p) => p.windowId === undefined),
+    'R: after the window dies, creates must fall back to the active window (no windowId)'
+  );
+  assert.ok(
+    (section.notes || []).some(
+      (n) => n.includes('scan window') && n.includes('gone')
+    ),
+    'R: the dead-window fallback should be noted, got: ' +
+      JSON.stringify(section.notes)
+  );
+  console.log(
+    'PASS scenario R: dead scan window is revalidated and the crawl continues in the active window'
+  );
+}
+
+console.log(
+  'PASS siteData streaming pipeline: hard window, single group, takeover safety, adaptive CPU'
+);

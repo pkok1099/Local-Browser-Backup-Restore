@@ -29,7 +29,16 @@ export const LOG_LEVELS = {
 
 export const LOG_LEVEL_NAMES = Object.keys(LOG_LEVELS);
 
-export const LOG_CATEGORIES = ['W1', 'W2', 'STORAGE', 'CPU', 'LOAD', 'SAFETY', 'RETRY', 'SYSTEM'];
+export const LOG_CATEGORIES = [
+  'W1',
+  'W2',
+  'STORAGE',
+  'CPU',
+  'LOAD',
+  'SAFETY',
+  'RETRY',
+  'SYSTEM',
+];
 
 const DB_NAME = 'bbr-site-log';
 const DB_STORE = 'entries-v2';
@@ -79,7 +88,10 @@ function openDb() {
               try {
                 const cursor = cursorRequest.result;
                 if (!cursor) return;
-                const addRequest = store.add({ ...cursor.value, id: `legacy:${cursor.primaryKey}` });
+                const addRequest = store.add({
+                  ...cursor.value,
+                  id: `legacy:${cursor.primaryKey}`,
+                });
                 addRequest.onerror = abortUpgrade;
                 cursor.continue();
               } catch (e) {
@@ -89,7 +101,9 @@ function openDb() {
           }
         }
         if (!db.objectStoreNames.contains(DB_META_STORE)) {
-          const metadata = db.createObjectStore(DB_META_STORE, { keyPath: 'key' });
+          const metadata = db.createObjectStore(DB_META_STORE, {
+            keyPath: 'key',
+          });
           metadata.put({ key: NEXT_SEQUENCE_KEY, value: 0 });
           metadata.put({ key: CLEAR_WATERMARK_KEY, value: 0 });
         }
@@ -106,7 +120,11 @@ export function selectLogEntriesToTrim(entries, maxEntries) {
   const excess = Math.max(0, entries.length - Math.floor(maxEntries));
   if (!excess) return [];
   const trimPriority = (level) =>
-    level === 'DEBUG' || level === 'INFO' ? 0 : level === 'WARN' || level === 'ERROR' ? 1 : 2;
+    level === 'DEBUG' || level === 'INFO'
+      ? 0
+      : level === 'WARN' || level === 'ERROR'
+        ? 1
+        : 2;
   return [...entries]
     .sort((a, b) => {
       const priority = trimPriority(a.level) - trimPriority(b.level);
@@ -123,7 +141,11 @@ function withSiteLogOrderLock(operation, { required = false } = {}) {
   const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
   if (locks?.request) return locks.request(SITE_LOG_ORDER_LOCK, operation);
   if (required && typeof indexedDB !== 'undefined') {
-    return Promise.reject(new Error('Web Locks are unavailable; persisted site logs were not cleared.'));
+    return Promise.reject(
+      new Error(
+        'Web Locks are unavailable; persisted site logs were not cleared.'
+      )
+    );
   }
   // Clear Logs itself is gated by the dashboard activity lock. Logger persistence
   // remains best-effort in contexts where Web Locks are unavailable.
@@ -140,13 +162,20 @@ function waitForTransaction(tx, message) {
 
 async function reserveLogSequence(db) {
   const tx = db.transaction(DB_META_STORE, 'readwrite');
-  const completed = waitForTransaction(tx, 'Failed to reserve a site-log sequence.');
+  const completed = waitForTransaction(
+    tx,
+    'Failed to reserve a site-log sequence.'
+  );
   const store = tx.objectStore(DB_META_STORE);
   const request = store.get(NEXT_SEQUENCE_KEY);
   let sequence = null;
   request.onsuccess = () => {
     const current = request.result?.value ?? 0;
-    if (!Number.isSafeInteger(current) || current < 0 || current === Number.MAX_SAFE_INTEGER) {
+    if (
+      !Number.isSafeInteger(current) ||
+      current < 0 ||
+      current === Number.MAX_SAFE_INTEGER
+    ) {
       try {
         tx.abort();
       } catch (e) {
@@ -173,7 +202,8 @@ async function reserveLogSequence(db) {
     }
   };
   await completed;
-  if (!Number.isSafeInteger(sequence)) throw new Error('Site-log sequence metadata is unavailable.');
+  if (!Number.isSafeInteger(sequence))
+    throw new Error('Site-log sequence metadata is unavailable.');
   return sequence;
 }
 
@@ -185,16 +215,26 @@ export function clearPersistedSiteLog() {
     async () => {
       await previousClear;
       const db = await openDb();
-      if (!db) throw new Error('IndexedDB is unavailable; persisted site logs were not cleared.');
+      if (!db)
+        throw new Error(
+          'IndexedDB is unavailable; persisted site logs were not cleared.'
+        );
       const hasStore = (name) => db.objectStoreNames.contains(name);
       if (!hasStore(DB_STORE) || !hasStore(DB_META_STORE)) {
         db.close();
-        throw new Error('Persisted site-log stores are unavailable; logs were not cleared.');
+        throw new Error(
+          'Persisted site-log stores are unavailable; logs were not cleared.'
+        );
       }
-      const stores = [DB_STORE, LEGACY_DB_STORE, DB_META_STORE].filter(hasStore);
+      const stores = [DB_STORE, LEGACY_DB_STORE, DB_META_STORE].filter(
+        hasStore
+      );
       try {
         const tx = db.transaction(stores, 'readwrite');
-        const completed = waitForTransaction(tx, 'Failed to clear persisted site logs.');
+        const completed = waitForTransaction(
+          tx,
+          'Failed to clear persisted site logs.'
+        );
         const metadata = tx.objectStore(DB_META_STORE);
         const sequenceRequest = metadata.get(NEXT_SEQUENCE_KEY);
         sequenceRequest.onsuccess = () => {
@@ -300,12 +340,16 @@ export function createSiteLogger(opts = {}) {
           sequence: await item.sequencePromise,
         }))
       );
-      const entries = orderedBatch.filter((item) => Number.isSafeInteger(item.sequence) && item.sequence > 0);
+      const entries = orderedBatch.filter(
+        (item) => Number.isSafeInteger(item.sequence) && item.sequence > 0
+      );
       if (!entries.length) return;
       const tx = db.transaction([DB_STORE, DB_META_STORE], 'readwrite');
       const completed = waitForTransaction(tx, 'Failed to persist site logs.');
       const store = tx.objectStore(DB_STORE);
-      const watermarkRequest = tx.objectStore(DB_META_STORE).get(CLEAR_WATERMARK_KEY);
+      const watermarkRequest = tx
+        .objectStore(DB_META_STORE)
+        .get(CLEAR_WATERMARK_KEY);
       watermarkRequest.onsuccess = () => {
         const watermark = watermarkRequest.result?.value ?? 0;
         if (!Number.isSafeInteger(watermark) || watermark < 0) {
@@ -352,7 +396,9 @@ export function createSiteLogger(opts = {}) {
 
   function log(level, category, message, context = {}) {
     const normLevel = LOG_LEVEL_NAMES.includes(level) ? level : 'INFO';
-    const normCategory = LOG_CATEGORIES.includes(category) ? category : 'SYSTEM';
+    const normCategory = LOG_CATEGORIES.includes(category)
+      ? category
+      : 'SYSTEM';
     const entry = {
       id: crypto.randomUUID(),
       seq: seq++,
@@ -399,13 +445,23 @@ export function createSiteLogger(opts = {}) {
     flush: () => flush(),
   };
   for (const lvl of LOG_LEVEL_NAMES) {
-    api[lvl.toLowerCase()] = (category, message, context) => log(lvl, category, message, context);
+    api[lvl.toLowerCase()] = (category, message, context) =>
+      log(lvl, category, message, context);
   }
   return api;
 }
 
 // Query the persisted log (dashboard Log page). Filters are optional.
-export async function querySiteLog({ levels, categories, corr, url, text, since, until, limit = 500 } = {}) {
+export async function querySiteLog({
+  levels,
+  categories,
+  corr,
+  url,
+  text,
+  since,
+  until,
+  limit = 500,
+} = {}) {
   const db = await openDb();
   if (!db) return [];
   try {
@@ -426,7 +482,11 @@ export async function querySiteLog({ levels, categories, corr, url, text, since,
           c.continue();
           return;
         }
-        if (categories && categories.length && !categories.includes(e.category)) {
+        if (
+          categories &&
+          categories.length &&
+          !categories.includes(e.category)
+        ) {
           c.continue();
           return;
         }

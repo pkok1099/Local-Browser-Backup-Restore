@@ -15,7 +15,12 @@ export class TypedError extends Error {
 // Deterministic, sorted-key JSON serialization. Used for integrity digests and
 // AEAD additional data so any byte-level tampering is detected.
 export function canonicalize(value) {
-  if (value === null || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string') {
+  if (
+    value === null ||
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'string'
+  ) {
     return JSON.stringify(value);
   }
   if (typeof value === 'undefined') return 'null';
@@ -66,16 +71,23 @@ export async function sha256Hex(str) {
 }
 
 export function hasCompressionStream() {
-  return typeof CompressionStream !== 'undefined' && typeof DecompressionStream !== 'undefined';
+  return (
+    typeof CompressionStream !== 'undefined' &&
+    typeof DecompressionStream !== 'undefined'
+  );
 }
 
 export async function gzipCompress(u8) {
-  const stream = new Blob([u8]).stream().pipeThrough(new CompressionStream('gzip'));
+  const stream = new Blob([u8])
+    .stream()
+    .pipeThrough(new CompressionStream('gzip'));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 export async function gzipDecompress(u8) {
-  const stream = new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const stream = new Blob([u8])
+    .stream()
+    .pipeThrough(new DecompressionStream('gzip'));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
@@ -87,7 +99,10 @@ export async function gzipDecompress(u8) {
 // would hang forever (found during test H on Chrome 153).
 export async function yieldToUI() {
   await new Promise((r) => setTimeout(r, 0));
-  if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+  if (
+    typeof document !== 'undefined' &&
+    document.visibilityState === 'visible'
+  ) {
     await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
   }
 }

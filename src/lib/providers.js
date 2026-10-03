@@ -39,25 +39,60 @@ export class StorageProvider {
   }
 
   connect() {
-    return Promise.reject(new TypedError('ERR_PROVIDER_NOT_IMPLEMENTED', 'connect() not implemented'));
+    return Promise.reject(
+      new TypedError(
+        'ERR_PROVIDER_NOT_IMPLEMENTED',
+        'connect() not implemented'
+      )
+    );
   }
   listBackups() {
-    return Promise.reject(new TypedError('ERR_PROVIDER_NOT_IMPLEMENTED', 'listBackups() not implemented'));
+    return Promise.reject(
+      new TypedError(
+        'ERR_PROVIDER_NOT_IMPLEMENTED',
+        'listBackups() not implemented'
+      )
+    );
   }
   uploadBackup(_artifact, _options) {
-    return Promise.reject(new TypedError('ERR_PROVIDER_NOT_IMPLEMENTED', 'uploadBackup() not implemented'));
+    return Promise.reject(
+      new TypedError(
+        'ERR_PROVIDER_NOT_IMPLEMENTED',
+        'uploadBackup() not implemented'
+      )
+    );
   }
   downloadBackup(_ref) {
-    return Promise.reject(new TypedError('ERR_PROVIDER_NOT_IMPLEMENTED', 'downloadBackup() not implemented'));
+    return Promise.reject(
+      new TypedError(
+        'ERR_PROVIDER_NOT_IMPLEMENTED',
+        'downloadBackup() not implemented'
+      )
+    );
   }
   deleteBackup(_ref) {
-    return Promise.reject(new TypedError('ERR_PROVIDER_NOT_IMPLEMENTED', 'deleteBackup() not implemented'));
+    return Promise.reject(
+      new TypedError(
+        'ERR_PROVIDER_NOT_IMPLEMENTED',
+        'deleteBackup() not implemented'
+      )
+    );
   }
   getMetadata(_ref) {
-    return Promise.reject(new TypedError('ERR_PROVIDER_NOT_IMPLEMENTED', 'getMetadata() not implemented'));
+    return Promise.reject(
+      new TypedError(
+        'ERR_PROVIDER_NOT_IMPLEMENTED',
+        'getMetadata() not implemented'
+      )
+    );
   }
   verifyRemoteObject(_ref, _expectedSha256) {
-    return Promise.reject(new TypedError('ERR_PROVIDER_NOT_IMPLEMENTED', 'verifyRemoteObject() not implemented'));
+    return Promise.reject(
+      new TypedError(
+        'ERR_PROVIDER_NOT_IMPLEMENTED',
+        'verifyRemoteObject() not implemented'
+      )
+    );
   }
 }
 
@@ -78,7 +113,11 @@ export class LocalStorageProvider extends StorageProvider {
   }
 
   connect() {
-    return Promise.resolve({ ok: true, provider: this.id, storage: 'chrome.storage.local' });
+    return Promise.resolve({
+      ok: true,
+      provider: this.id,
+      storage: 'chrome.storage.local',
+    });
   }
 
   async #readManifestRaw() {
@@ -90,7 +129,10 @@ export class LocalStorageProvider extends StorageProvider {
     await chrome.storage.local.set({ [LS_MANIFEST]: manifest });
   }
 
-  async uploadBackup(artifact, { manifestEntry = null, plaintextAllowed = false } = {}) {
+  async uploadBackup(
+    artifact,
+    { manifestEntry = null, plaintextAllowed = false } = {}
+  ) {
     // The local area is not a public repository, but the same guard runs so
     // local mirrors can never diverge from the policy decisions.
     assertUploadSafe(artifact, { repoPublic: false, plaintextAllowed });
@@ -103,11 +145,17 @@ export class LocalStorageProvider extends StorageProvider {
       formatVersion: artifact.formatVersion,
       encrypted: artifact.encrypted,
       encryptionVersion: artifact.encryptionVersion,
-      integrity: { algorithm: 'sha256', encoding: 'utf8', digest: artifact.sha256Hex },
+      integrity: {
+        algorithm: 'sha256',
+        encoding: 'utf8',
+        digest: artifact.sha256Hex,
+      },
       browser: artifact.browser,
       trigger: artifact.trigger,
     };
-    await chrome.storage.local.set({ [LS_KEY(artifact.id)]: { meta, text: artifact.text } });
+    await chrome.storage.local.set({
+      [LS_KEY(artifact.id)]: { meta, text: artifact.text },
+    });
     const raw = await this.#readManifestRaw();
     const manifest = raw || {
       format: 'browser-backup-remote-manifest',
@@ -115,14 +163,20 @@ export class LocalStorageProvider extends StorageProvider {
       updatedAt: new Date().toISOString(),
       backups: [],
     };
-    manifest.backups = [...(manifest.backups || []).filter((b) => b.id !== meta.id), meta];
+    manifest.backups = [
+      ...(manifest.backups || []).filter((b) => b.id !== meta.id),
+      meta,
+    ];
     manifest.updatedAt = new Date().toISOString();
     await this.#writeManifest(manifest);
     // verify the stored object by reading it back
     const stored = await chrome.storage.local.get(LS_KEY(artifact.id));
     const sha = await sha256Hex(stored[LS_KEY(artifact.id)].text);
     if (sha !== artifact.sha256Hex) {
-      throw new TypedError('ERR_VERIFY_FAILED', 'Local copy verification failed after write.');
+      throw new TypedError(
+        'ERR_VERIFY_FAILED',
+        'Local copy verification failed after write.'
+      );
     }
     return { verified: true, id: artifact.id, sha256Hex: sha };
   }
@@ -130,18 +184,23 @@ export class LocalStorageProvider extends StorageProvider {
   async #manifest() {
     const raw = await this.#readManifestRaw();
     if (!raw) return [];
-    return (raw.backups || []).slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    return (raw.backups || [])
+      .slice()
+      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   }
 
   async listBackups() {
-    return (await this.#manifest()).map((b) => new BackupRef({ ...b, provider: this.id }));
+    return (await this.#manifest()).map(
+      (b) => new BackupRef({ ...b, provider: this.id })
+    );
   }
 
   async downloadBackup(ref) {
     const id = typeof ref === 'string' ? ref : ref.id;
     const o = await chrome.storage.local.get(LS_KEY(id));
     const rec = o[LS_KEY(id)];
-    if (!rec) throw new TypedError('ERR_NOT_FOUND', `Local backup "${id}" not found.`);
+    if (!rec)
+      throw new TypedError('ERR_NOT_FOUND', `Local backup "${id}" not found.`);
     return { text: rec.text, sha256Hex: await sha256Hex(rec.text) };
   }
 
@@ -161,7 +220,8 @@ export class LocalStorageProvider extends StorageProvider {
     const id = typeof ref === 'string' ? ref : ref.id;
     const all = await this.#manifest();
     const m = all.find((b) => b.id === id);
-    if (!m) throw new TypedError('ERR_NOT_FOUND', `Local backup "${id}" not found.`);
+    if (!m)
+      throw new TypedError('ERR_NOT_FOUND', `Local backup "${id}" not found.`);
     return new BackupRef({ ...m, provider: this.id });
   }
 

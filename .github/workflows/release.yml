@@ -1,0 +1,81 @@
+name: release
+
+# Release flow: push a tag like `v1.4.7` (must match package.json version).
+# Produces:
+#   - <name>-<version>-chrome.zip  (always — sideload / Web Store upload)
+#   - <name>-<version>-chrome.crx  (only when the CRX_PRIVATE_KEY secret is set)
+#
+# CRX signing: the secret must hold the PEM private key whose public key
+# matches the pinned `key` in wxt.config.ts (fixed extension ID). The workflow
+# verifies this and FAILS loudly on mismatch — a CRX signed with the wrong
+# key is rejected by Chrome at install time. With no secret, the release
+# ships the zip only.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "${{ github.event_name }}" = "push" ] && [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG does not match package.json version $PKG"
+            exit 1
+          fi
+          echo "version=$PKG" >> "$GITHUB_ENV"
+
+      - run: npm ci
+      - run: npm exec -- wxt prepare
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - run: npm run zip
+
+      - name: Pack CRX (signed)
+        if: ${{ secrets.CRX_PRIVATE_KEY != '' }}
+        env:
+          CRX_PRIVATE_KEY: ${{ secrets.CRX_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          npm install --no-save --no-audit --no-fund crx3@2.0.0
+          printf '%s' "$CRX_PRIVATE_KEY" > /tmp/crx-key.pem
+          chmod 600 /tmp/crx-key.pem
+          # The signing key must match the pinned manifest key (fixed extension
+          # ID) — otherwise Chrome rejects the CRX at install time.
+          PUB="$(openssl pkey -in /tmp/crx-key.pem -pubout -outform DER | openssl base64 -A)"
+          PINNED="$(node -p "require('./.output/chrome-mv3/manifest.json').key")"
+          if [ "$PUB" != "$PINNED" ]; then
+            echo "::error::CRX_PRIVATE_KEY does not match the pinned extension key in wxt.config.ts."
+            echo "::error::Either store the correct private key, or remove the pinned 'key' (the CRX then gets a fresh extension ID)."
+            exit 1
+          fi
+          ./node_modules/.bin/crx3 .output/chrome-mv3 \
+            -p /tmp/crx-key.pem \
+            -o "local-browser-backup-extension-${{ env.version }}-chrome.crx"
+          shred -u /tmp/crx-key.pem 2>/dev/null || rm -f /tmp/crx-key.pem
+          ls -la ./*.crx
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            .output/*.zip
+            local-browser-backup-extension-*.crx
+          fail_on_unmatched_files: false
+          generate_release_notes: true

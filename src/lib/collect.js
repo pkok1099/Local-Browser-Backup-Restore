@@ -35,8 +35,13 @@ async function collectBookmarks() {
   const otherId = (kids.find((k) => k.id === '2') || kids[1] || {}).id;
   const roots = {};
   for (const r of kids) {
-    const key = r.id === barId ? 'bookmark_bar' : r.id === otherId ? 'other' : 'mobile';
-    roots[key] = { id: r.id, title: r.title, children: (r.children || []).map(serBookmarkNode) };
+    const key =
+      r.id === barId ? 'bookmark_bar' : r.id === otherId ? 'other' : 'mobile';
+    roots[key] = {
+      id: r.id,
+      title: r.title,
+      children: (r.children || []).map(serBookmarkNode),
+    };
   }
   return { roots };
 }
@@ -44,7 +49,11 @@ async function collectBookmarks() {
 // ---------- history ----------
 
 async function collectHistory(progress) {
-  const items = await chrome.history.search({ text: '', startTime: 0, maxResults: 10000000 });
+  const items = await chrome.history.search({
+    text: '',
+    startTime: 0,
+    maxResults: 10000000,
+  });
   const visits = {};
   let failedVisits = 0;
   let i = 0;
@@ -60,7 +69,9 @@ async function collectHistory(progress) {
         transition: x.transition,
         visitId: x.visitId,
         referringVisitId: x.referringVisitId,
-        ...(x.openerVisitId !== undefined ? { openerVisitId: x.openerVisitId } : {}),
+        ...(x.openerVisitId !== undefined
+          ? { openerVisitId: x.openerVisitId }
+          : {}),
       }));
     } catch (e) {
       failedVisits++;
@@ -102,20 +113,30 @@ function serTab(t) {
 
 async function collectTabsWindows() {
   const notes = [];
-  const isExtensionUiTab = (t) => /^(chrome-extension:|devtools:|chrome-untrusted:)/.test(t.url || '');
-  const wins = await chrome.windows.getAll({ populate: true, windowTypes: ['normal', 'popup'] });
+  const isExtensionUiTab = (t) =>
+    /^(chrome-extension:|devtools:|chrome-untrusted:)/.test(t.url || '');
+  const wins = await chrome.windows.getAll({
+    populate: true,
+    windowTypes: ['normal', 'popup'],
+  });
   const windows = [];
   let excludedTabs = 0;
   for (const w of wins) {
     const tabs = (w.tabs || []).slice().sort((a, b) => a.index - b.index);
-    const visibleTabs = tabs.filter((t) => !t.incognito && !isExtensionUiTab(t));
+    const visibleTabs = tabs.filter(
+      (t) => !t.incognito && !isExtensionUiTab(t)
+    );
     excludedTabs += tabs.length - visibleTabs.length;
     if (tabs.length !== visibleTabs.length && visibleTabs.length === 0) {
-      notes.push('Window containing only extension-UI/incognito tabs excluded (not user data).');
+      notes.push(
+        'Window containing only extension-UI/incognito tabs excluded (not user data).'
+      );
       continue;
     }
     if (tabs.length !== visibleTabs.length) {
-      notes.push(`${tabs.length - visibleTabs.length} extension-UI/incognito tab(s) excluded (not user data).`);
+      notes.push(
+        `${tabs.length - visibleTabs.length} extension-UI/incognito tab(s) excluded (not user data).`
+      );
     }
     windows.push({
       type: w.type,
@@ -154,17 +175,31 @@ function serSessionItem(item) {
   const o = {};
   if (typeof item.lastModified === 'number') o.lastModified = item.lastModified;
   if (item.tab) {
-    o.tab = { url: item.tab.url || '', title: item.tab.title || '', index: item.tab.index };
+    o.tab = {
+      url: item.tab.url || '',
+      title: item.tab.title || '',
+      index: item.tab.index,
+    };
     if (item.tab.pinned) o.tab.pinned = true;
   }
   if (item.window) {
     o.window = {
-      bounds: { left: item.window.left, top: item.window.top, width: item.window.width, height: item.window.height },
+      bounds: {
+        left: item.window.left,
+        top: item.window.top,
+        width: item.window.width,
+        height: item.window.height,
+      },
       state: item.window.state,
       tabs: (item.window.tabs || [])
         .filter((t) => !t.incognito)
         .sort((a, b) => a.index - b.index)
-        .map((t) => ({ url: t.url || '', title: t.title || '', index: t.index, pinned: !!t.pinned })),
+        .map((t) => ({
+          url: t.url || '',
+          title: t.title || '',
+          index: t.index,
+          pinned: !!t.pinned,
+        })),
     };
   }
   return o;
@@ -184,7 +219,9 @@ async function collectSessions() {
   };
   const out = {
     maxSessionResults: max,
-    recentlyClosed: (recent || []).filter((it) => !isScanNoise(it)).map(serSessionItem),
+    recentlyClosed: (recent || [])
+      .filter((it) => !isScanNoise(it))
+      .map(serSessionItem),
   };
   if (typeof chrome.sessions.getDevices === 'function') {
     try {
@@ -214,7 +251,8 @@ function serCookie(c) {
     session: !!c.session,
     storeId: c.storeId,
   };
-  if (!c.session && typeof c.expirationDate === 'number') o.expirationDate = c.expirationDate;
+  if (!c.session && typeof c.expirationDate === 'number')
+    o.expirationDate = c.expirationDate;
   if (typeof c.value === 'string') o.value = c.value;
   if (c.firstPartyDomain !== undefined) o.firstPartyDomain = c.firstPartyDomain;
   if (c.partitionKey !== undefined) o.partitionKey = c.partitionKey;
@@ -227,7 +265,9 @@ async function collectCookies() {
   let cookies = [];
   for (const st of stores) {
     if (st.id !== '0') {
-      notes.push(`Cookie store "${st.id}" (non-default/incognito) excluded by design.`);
+      notes.push(
+        `Cookie store "${st.id}" (non-default/incognito) excluded by design.`
+      );
       continue;
     }
     const list = await chrome.cookies.getAll({ storeId: st.id });
@@ -242,7 +282,8 @@ async function collectCookies() {
       try {
         if (!url) return;
         const u = new URL(url);
-        if (u.protocol === 'https:' || u.protocol === 'http:') candidates.add(u.origin);
+        if (u.protocol === 'https:' || u.protocol === 'http:')
+          candidates.add(u.origin);
       } catch (e) {
         /* ignore malformed */
       }
@@ -250,17 +291,29 @@ async function collectCookies() {
     try {
       const tabs = await chrome.tabs.query({});
       for (const t of tabs) addCandidate(t.url);
-      const hist = await chrome.history.search({ text: '', startTime: 0, maxResults: 2000 });
+      const hist = await chrome.history.search({
+        text: '',
+        startTime: 0,
+        maxResults: 2000,
+      });
       for (const h of hist) addCandidate(h.url);
-      if (chrome.readingList && typeof chrome.readingList.query === 'function') {
+      if (
+        chrome.readingList &&
+        typeof chrome.readingList.query === 'function'
+      ) {
         for (const e of await chrome.readingList.query({})) addCandidate(e.url);
       }
     } catch (e) {
-      notes.push('partition-key candidate scan incomplete: ' + (e.message || e));
+      notes.push(
+        'partition-key candidate scan incomplete: ' + (e.message || e)
+      );
     }
     let scanned = 0;
     const seen = new Set(
-      cookies.map((c) => `${c.name}|${c.domain}|${c.path}|${JSON.stringify(c.partitionKey ?? null)}`)
+      cookies.map(
+        (c) =>
+          `${c.name}|${c.domain}|${c.path}|${JSON.stringify(c.partitionKey ?? null)}`
+      )
     );
     for (const site of candidates) {
       if (scanned >= 3000) {
@@ -269,7 +322,10 @@ async function collectCookies() {
       }
       scanned++;
       try {
-        const plist = await chrome.cookies.getAll({ storeId: st.id, partitionKey: { topLevelSite: site } });
+        const plist = await chrome.cookies.getAll({
+          storeId: st.id,
+          partitionKey: { topLevelSite: site },
+        });
         for (const c of plist) {
           const key = `${c.name}|${c.domain}|${c.path}|${JSON.stringify(c.partitionKey ?? null)}`;
           if (!seen.has(key)) {
@@ -331,7 +387,10 @@ async function collectReadingList() {
   } else if (typeof chrome.readingList.getEntries === 'function') {
     entries = await chrome.readingList.getEntries({});
   } else {
-    throw new TypedError('ERR_READINGLIST_NO_ENUM', 'readingList API has no enumeration method in this browser');
+    throw new TypedError(
+      'ERR_READINGLIST_NO_ENUM',
+      'readingList API has no enumeration method in this browser'
+    );
   }
   return {
     entries: (entries || []).map((e) => ({
@@ -376,8 +435,12 @@ async function collectInstalledExtensions() {
         enabled: e.enabled,
         installType: e.installType,
         isSelf: e.id === selfId,
-        ...(Array.isArray(e.permissions) && e.permissions.length ? { permissions: e.permissions } : {}),
-        ...(Array.isArray(e.hostPermissions) && e.hostPermissions.length ? { hostPermissions: e.hostPermissions } : {}),
+        ...(Array.isArray(e.permissions) && e.permissions.length
+          ? { permissions: e.permissions }
+          : {}),
+        ...(Array.isArray(e.hostPermissions) && e.hostPermissions.length
+          ? { hostPermissions: e.hostPermissions }
+          : {}),
         ...(e.disabledReason ? { disabledReason: e.disabledReason } : {}),
         ...(e.optionsUrl ? { optionsUrl: e.optionsUrl } : {}),
         ...(e.homepageUrl ? { homepageUrl: e.homepageUrl } : {}),
@@ -409,7 +472,9 @@ async function collectProfile() {
   return {
     userAgent: navigator.userAgent,
     chromeVersion: getChromeVersion(),
-    platform: platform ? { os: platform.os, arch: platform.arch, naclArch: platform.naclArch } : null,
+    platform: platform
+      ? { os: platform.os, arch: platform.arch, naclArch: platform.naclArch }
+      : null,
     extensionVersion: chrome.runtime.getManifest().version,
     locale: navigator.language,
   };
@@ -457,16 +522,23 @@ export function computeCounts(data) {
     c.tabs = data.tabsWindows.windows.reduce((a, w) => a + w.tabs.length, 0);
     c.tabGroups = data.tabsWindows.tabGroups.length;
   }
-  if (data.sessions) c.recentlyClosedSessions = data.sessions.recentlyClosed.length;
+  if (data.sessions)
+    c.recentlyClosedSessions = data.sessions.recentlyClosed.length;
   if (data.cookies) c.cookies = data.cookies.cookies.length;
   if (data.downloads) c.downloads = data.downloads.items.length;
   if (data.readingList) c.readingList = data.readingList.entries.length;
-  if (data.installedExtensions) c.installedExtensions = data.installedExtensions.items.length;
+  if (data.installedExtensions)
+    c.installedExtensions = data.installedExtensions.items.length;
   if (data.extensionPermissions)
-    c.extensionPermissions = data.extensionPermissions.permissions.length + data.extensionPermissions.origins.length;
+    c.extensionPermissions =
+      data.extensionPermissions.permissions.length +
+      data.extensionPermissions.origins.length;
   if (data.extensionStorage) {
     const local = data.extensionStorage.local;
-    c.extensionStorage = local && typeof local === 'object' && !Array.isArray(local) ? Object.keys(local).length : 0;
+    c.extensionStorage =
+      local && typeof local === 'object' && !Array.isArray(local)
+        ? Object.keys(local).length
+        : 0;
   }
   if (data.profile) c.profile = 1;
   Object.assign(c, computeSiteDataCounts(data.siteData));
@@ -481,10 +553,17 @@ export function computeCounts(data) {
 // stats is an optional live-counter object forwarded by the category.
 export async function collectAll(progress, options) {
   const opts = options || {};
-  const selected = Array.isArray(opts.selectedCategories) ? new Set(opts.selectedCategories) : null;
-  const activeCount = COLLECTORS.filter(([name]) => !selected || selected.has(name)).length;
+  const selected = Array.isArray(opts.selectedCategories)
+    ? new Set(opts.selectedCategories)
+    : null;
+  const activeCount = COLLECTORS.filter(
+    ([name]) => !selected || selected.has(name)
+  ).length;
   const total = activeCount || 1;
-  const clamp01 = (f) => (typeof f === 'number' && Number.isFinite(f) ? Math.min(1, Math.max(0, f)) : 0);
+  const clamp01 = (f) =>
+    typeof f === 'number' && Number.isFinite(f)
+      ? Math.min(1, Math.max(0, f))
+      : 0;
   const categoryStatus = {};
   const data = {};
   let doneCount = 0;
@@ -493,16 +572,30 @@ export async function collectAll(progress, options) {
       categoryStatus[name] = { ok: false, skipped: true };
       continue;
     }
-    if (progress) progress(`collecting: ${name}`, name, 'running', doneCount / total);
+    if (progress)
+      progress(`collecting: ${name}`, name, 'running', doneCount / total);
     try {
       data[name] = await fn(
-        (msg, frac, stats) => progress && progress(msg, name, 'running', (doneCount + clamp01(frac)) / total, stats),
+        (msg, frac, stats) =>
+          progress &&
+          progress(
+            msg,
+            name,
+            'running',
+            (doneCount + clamp01(frac)) / total,
+            stats
+          ),
         name === 'siteData' ? opts.siteData || {} : undefined
       );
       categoryStatus[name] = { ok: true };
     } catch (e) {
-      const stack = e && e.stack ? String(e.stack).split('\n').slice(0, 6).join('\n') : '';
-      categoryStatus[name] = { ok: false, error: (e && e.message) || String(e), stack };
+      const stack =
+        e && e.stack ? String(e.stack).split('\n').slice(0, 6).join('\n') : '';
+      categoryStatus[name] = {
+        ok: false,
+        error: (e && e.message) || String(e),
+        stack,
+      };
     }
     doneCount++;
     if (progress) progress(`collected: ${name}`, name, 'ok', doneCount / total);

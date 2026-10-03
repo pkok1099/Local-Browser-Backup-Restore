@@ -17,7 +17,12 @@ const CLOUD_RETRY_BASE_MS = 60 * 1000;
 export const CLOUD_RETRY_MAX_ATTEMPTS = 8;
 
 export function cloudRetryDelayMs(retryCount) {
-  if (!Number.isInteger(retryCount) || retryCount < 1 || retryCount > CLOUD_RETRY_MAX_ATTEMPTS) return null;
+  if (
+    !Number.isInteger(retryCount) ||
+    retryCount < 1 ||
+    retryCount > CLOUD_RETRY_MAX_ATTEMPTS
+  )
+    return null;
   return CLOUD_RETRY_BASE_MS * 2 ** (retryCount - 1);
 }
 
@@ -27,18 +32,29 @@ const RETRY_BACKOFF_MS = 10 * 60 * 1000;
 
 export function normalizeScheduleConfig(raw) {
   const c = raw || {};
-  const hour = Number.isInteger(c.hour) ? Math.min(23, Math.max(0, c.hour)) : 12;
-  const minute = Number.isInteger(c.minute) ? Math.min(59, Math.max(0, c.minute)) : 0;
+  const hour = Number.isInteger(c.hour)
+    ? Math.min(23, Math.max(0, c.hour))
+    : 12;
+  const minute = Number.isInteger(c.minute)
+    ? Math.min(59, Math.max(0, c.minute))
+    : 0;
   const frequency = c.frequency === 'weekly' ? 'weekly' : 'daily';
   const weekdays = [
     ...new Set(
-      (Array.isArray(c.weekdays) ? c.weekdays : []).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6)
+      (Array.isArray(c.weekdays) ? c.weekdays : []).filter(
+        (day) => Number.isInteger(day) && day >= 0 && day <= 6
+      )
     ),
   ].sort((a, b) => a - b);
   return {
     enabled: !!c.enabled,
     frequency,
-    weekdays: frequency === 'weekly' ? (weekdays.length ? weekdays : [1, 2, 3, 4, 5]) : [],
+    weekdays:
+      frequency === 'weekly'
+        ? weekdays.length
+          ? weekdays
+          : [1, 2, 3, 4, 5]
+        : [],
     hour,
     minute,
   };
@@ -66,18 +82,29 @@ export function isBackupDue(config, state, now) {
   }
   if (now < scheduledToday) return { due: false, reason: 'before-today' };
 
-  const lastSuccess = state && state.lastSuccessfulBackupAt ? new Date(state.lastSuccessfulBackupAt) : null;
+  const lastSuccess =
+    state && state.lastSuccessfulBackupAt
+      ? new Date(state.lastSuccessfulBackupAt)
+      : null;
   if (lastSuccess && !isNaN(lastSuccess) && lastSuccess >= scheduledToday) {
     return { due: false, reason: 'already-succeeded-today' };
   }
 
-  const lastAttempt = state && state.lastAttempt ? new Date(state.lastAttempt) : null;
-  if (lastAttempt && !isNaN(lastAttempt) && lastAttempt >= scheduledToday && now - lastAttempt < RETRY_BACKOFF_MS) {
+  const lastAttempt =
+    state && state.lastAttempt ? new Date(state.lastAttempt) : null;
+  if (
+    lastAttempt &&
+    !isNaN(lastAttempt) &&
+    lastAttempt >= scheduledToday &&
+    now - lastAttempt < RETRY_BACKOFF_MS
+  ) {
     return { due: false, reason: 'retry-backoff' };
   }
 
   // A run more than 2×ALARM_PERIOD past the scheduled time is a catch-up run.
-  const isCatchUp = now.getTime() - scheduledToday.getTime() > 2 * ALARM_PERIOD_MINUTES * 60 * 1000;
+  const isCatchUp =
+    now.getTime() - scheduledToday.getTime() >
+    2 * ALARM_PERIOD_MINUTES * 60 * 1000;
   return { due: true, reason: isCatchUp ? 'catch-up' : 'scheduled-due' };
 }
 

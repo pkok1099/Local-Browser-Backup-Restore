@@ -43,17 +43,29 @@ export class GitHubStorageProvider extends StorageProvider {
   constructor(cfg) {
     super();
     if (!cfg || typeof cfg.token !== 'string' || cfg.token.length === 0) {
-      throw new TypedError('ERR_NOT_CONFIGURED', 'A GitHub personal access token is required.');
+      throw new TypedError(
+        'ERR_NOT_CONFIGURED',
+        'A GitHub personal access token is required.'
+      );
     }
     if (!cfg.owner || !cfg.repo) {
-      throw new TypedError('ERR_NOT_CONFIGURED', 'Repository owner and name are required.');
+      throw new TypedError(
+        'ERR_NOT_CONFIGURED',
+        'Repository owner and name are required.'
+      );
     }
     this.token = cfg.token;
     this.owner = cfg.owner;
     this.repo = cfg.repo;
     this.branch = cfg.branch || null; // null = repo default branch (resolved on connect)
-    this.basePath = (cfg.basePath || 'browser-backups').replace(/^\/+|\/+$/g, '');
-    this.apiBase = (cfg.apiBaseUrl || 'https://api.github.com').replace(/\/+$/, '');
+    this.basePath = (cfg.basePath || 'browser-backups').replace(
+      /^\/+|\/+$/g,
+      ''
+    );
+    this.apiBase = (cfg.apiBaseUrl || 'https://api.github.com').replace(
+      /\/+$/,
+      ''
+    );
     this.repoInfo = null; // { private, defaultBranch, permissions, fullName }
     this.account = null; // { login }
   }
@@ -81,14 +93,20 @@ export class GitHubStorageProvider extends StorageProvider {
     try {
       res = await fetch(url, {
         method,
-        headers: this.#headers(raw ? { Accept: 'application/vnd.github.raw' } : {}),
+        headers: this.#headers(
+          raw ? { Accept: 'application/vnd.github.raw' } : {}
+        ),
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
     } catch (e) {
-      throw new TypedError('ERR_NETWORK', `GitHub request failed (network error): ${this.#redact(e.message)}`);
+      throw new TypedError(
+        'ERR_NETWORK',
+        `GitHub request failed (network error): ${this.#redact(e.message)}`
+      );
     }
     if (res.ok) {
-      if (raw) return { status: res.status, text: await res.text(), json: null };
+      if (raw)
+        return { status: res.status, text: await res.text(), json: null };
       const text = await res.text();
       let json;
       try {
@@ -145,10 +163,19 @@ export class GitHubStorageProvider extends StorageProvider {
   async connect() {
     const me = await this.#request('GET', '/user');
     this.account = me.json && me.json.login ? { login: me.json.login } : null;
-    const info = await this.#request('GET', `/repos/${this.owner}/${this.repo}`);
+    const info = await this.#request(
+      'GET',
+      `/repos/${this.owner}/${this.repo}`
+    );
     const r = info.json || {};
-    if (r.full_name && r.full_name.toLowerCase() !== `${this.owner}/${this.repo}`.toLowerCase()) {
-      throw new TypedError('ERR_GITHUB_REPO_NOT_FOUND', 'GitHub: repository lookup returned an unexpected repository.');
+    if (
+      r.full_name &&
+      r.full_name.toLowerCase() !== `${this.owner}/${this.repo}`.toLowerCase()
+    ) {
+      throw new TypedError(
+        'ERR_GITHUB_REPO_NOT_FOUND',
+        'GitHub: repository lookup returned an unexpected repository.'
+      );
     }
     this.repoInfo = {
       fullName: r.full_name || `${this.owner}/${this.repo}`,
@@ -184,7 +211,10 @@ export class GitHubStorageProvider extends StorageProvider {
   async #getRemoteManifest() {
     let r;
     try {
-      r = await this.#request('GET', this.#path(this.manifestPath()), { ref: this.branch, raw: true });
+      r = await this.#request('GET', this.#path(this.manifestPath()), {
+        ref: this.branch,
+        raw: true,
+      });
     } catch (e) {
       if (e.code === 'ERR_GITHUB_REPO_NOT_FOUND') return { manifest: null }; // first upload
       throw e;
@@ -193,7 +223,10 @@ export class GitHubStorageProvider extends StorageProvider {
     try {
       manifest = normalizeManifest(JSON.parse(r.text));
     } catch (e) {
-      throw new TypedError('ERR_MALFORMED', 'Remote manifest is unreadable (invalid JSON or foreign format).');
+      throw new TypedError(
+        'ERR_MALFORMED',
+        'Remote manifest is unreadable (invalid JSON or foreign format).'
+      );
     }
     return { manifest };
   }
@@ -206,24 +239,39 @@ export class GitHubStorageProvider extends StorageProvider {
       ...(sha ? { sha } : {}),
     };
     const r = await this.#request('PUT', this.#path(path), { body });
-    const outSha = r.json && r.json.content && r.json.content.sha ? r.json.content.sha : null;
+    const outSha =
+      r.json && r.json.content && r.json.content.sha
+        ? r.json.content.sha
+        : null;
     return { blobSha: outSha };
   }
 
-  async uploadBackup(artifact, { plaintextAllowed = false, message = null } = {}) {
+  async uploadBackup(
+    artifact,
+    { plaintextAllowed = false, message = null } = {}
+  ) {
     const repoInfo = await this.ensureRepoInfo();
     // ---- plaintext safety guard (enforced BELOW the UI, in the storage layer) ----
-    assertUploadSafe(artifact, { repoPublic: repoInfo.private === false, plaintextAllowed });
+    assertUploadSafe(artifact, {
+      repoPublic: repoInfo.private === false,
+      plaintextAllowed,
+    });
 
     const filePath = `${this.basePath}/backups/${artifact.filename}`;
     const blobSha = await gitBlobSha1(artifact.bytes);
     const commitMsg =
-      message || `browser-backup: add ${artifact.id} (${artifact.encrypted ? 'encrypted' : 'plaintext'})`;
+      message ||
+      `browser-backup: add ${artifact.id} (${artifact.encrypted ? 'encrypted' : 'plaintext'})`;
 
-    const put = await this.#putFile(filePath, artifact.text, { message: commitMsg });
+    const put = await this.#putFile(filePath, artifact.text, {
+      message: commitMsg,
+    });
 
     // ---- verify the remote object: re-download and compare byte digests ----
-    const remote = await this.#request('GET', this.#path(filePath), { ref: this.branch, raw: true });
+    const remote = await this.#request('GET', this.#path(filePath), {
+      ref: this.branch,
+      raw: true,
+    });
     const remoteBytes = new TextEncoder().encode(remote.text);
     const remoteSha256 = await sha256Hex(remote.text);
     if (remoteSha256 !== artifact.sha256Hex) {
@@ -234,7 +282,10 @@ export class GitHubStorageProvider extends StorageProvider {
     }
     const remoteBlobSha = await gitBlobSha1(remoteBytes);
     if (remoteBlobSha !== blobSha || (put.blobSha && put.blobSha !== blobSha)) {
-      throw new TypedError('ERR_VERIFY_FAILED', 'Upload verification failed: git blob id mismatch.');
+      throw new TypedError(
+        'ERR_VERIFY_FAILED',
+        'Upload verification failed: git blob id mismatch.'
+      );
     }
     return {
       verified: true,
@@ -252,7 +303,9 @@ export class GitHubStorageProvider extends StorageProvider {
     try {
       const { manifest } = await this.#getRemoteManifest();
       if (manifest && manifest.backups) {
-        return manifest.backups.map((b) => new BackupRef({ ...b, provider: this.id }));
+        return manifest.backups.map(
+          (b) => new BackupRef({ ...b, provider: this.id })
+        );
       }
     } catch (e) {
       if (e.code !== 'ERR_MALFORMED') throw e;
@@ -260,7 +313,9 @@ export class GitHubStorageProvider extends StorageProvider {
     // fallback: directory listing
     let listing;
     try {
-      listing = await this.#request('GET', this.#path(this.backupsDir()), { ref: this.branch });
+      listing = await this.#request('GET', this.#path(this.backupsDir()), {
+        ref: this.branch,
+      });
     } catch (e) {
       if (e.code === 'ERR_GITHUB_REPO_NOT_FOUND') return [];
       throw e;
@@ -300,13 +355,18 @@ export class GitHubStorageProvider extends StorageProvider {
   }
 
   async #fileSha(path) {
-    const r = await this.#request('GET', this.#path(path), { ref: this.branch });
+    const r = await this.#request('GET', this.#path(path), {
+      ref: this.branch,
+    });
     return r.json.sha;
   }
 
   async downloadBackup(ref) {
     const path = this.#resolvePath(ref);
-    const r = await this.#request('GET', this.#path(path), { ref: this.branch, raw: true });
+    const r = await this.#request('GET', this.#path(path), {
+      ref: this.branch,
+      raw: true,
+    });
     const text = r.text;
     if (!text || text.length === 0) {
       throw new TypedError('ERR_EMPTY_FILE', 'Downloaded backup is empty.');
@@ -321,12 +381,19 @@ export class GitHubStorageProvider extends StorageProvider {
       sha = await this.#fileSha(path);
     } catch (e) {
       if (e.code === 'ERR_GITHUB_REPO_NOT_FOUND') {
-        throw new TypedError('ERR_NOT_FOUND', `Remote backup not found: ${path}`);
+        throw new TypedError(
+          'ERR_NOT_FOUND',
+          `Remote backup not found: ${path}`
+        );
       }
       throw e;
     }
     await this.#request('DELETE', this.#path(path), {
-      body: { message: `browser-backup: delete ${path.split('/').pop()}`, sha, branch: this.branch },
+      body: {
+        message: `browser-backup: delete ${path.split('/').pop()}`,
+        sha,
+        branch: this.branch,
+      },
     });
     return true;
   }
@@ -334,18 +401,34 @@ export class GitHubStorageProvider extends StorageProvider {
   async getMetadata(ref) {
     const all = await this.listBackups();
     const id = typeof ref === 'string' ? ref : ref.id;
-    const m = all.find((b) => b.id === id || b.filename === (typeof ref === 'object' ? ref.filename : undefined));
-    if (!m) throw new TypedError('ERR_NOT_FOUND', `Remote backup "${id}" not found in manifest.`);
+    const m = all.find(
+      (b) =>
+        b.id === id ||
+        b.filename === (typeof ref === 'object' ? ref.filename : undefined)
+    );
+    if (!m)
+      throw new TypedError(
+        'ERR_NOT_FOUND',
+        `Remote backup "${id}" not found in manifest.`
+      );
     return m;
   }
 
   async verifyRemoteObject(ref, expectedSha256) {
     try {
       const path = this.#resolvePath(ref);
-      const r = await this.#request('GET', this.#path(path), { ref: this.branch, raw: true });
+      const r = await this.#request('GET', this.#path(path), {
+        ref: this.branch,
+        raw: true,
+      });
       const sha = await sha256Hex(r.text);
       const blobSha = await gitBlobSha1(new TextEncoder().encode(r.text));
-      return { ok: sha === expectedSha256, sha256Hex: sha, gitBlobSha: blobSha, expectedSha256 };
+      return {
+        ok: sha === expectedSha256,
+        sha256Hex: sha,
+        gitBlobSha: blobSha,
+        expectedSha256,
+      };
     } catch (e) {
       return { ok: false, error: e.message };
     }

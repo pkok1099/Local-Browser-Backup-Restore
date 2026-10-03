@@ -9,7 +9,26 @@
 // the engine reports that instead of pretending.
 
 import { yieldToUI, TypedError } from './util.js';
-import { restoreSiteData as restoreSiteDataImpl, createTabOwnership } from './sitedata.js';
+import {
+  restoreSiteData as restoreSiteDataImpl,
+  createTabOwnership,
+} from './sitedata.js';
+
+// Only http(s) URLs may be navigated/opened during restore. Anything else
+// (data:, javascript:, chrome:, …) is refused and reported — a malicious
+// backup file must not be able to render attacker HTML as a real tab.
+function isRestorableHttpUrl(u) {
+  return (
+    typeof u === 'string' &&
+    (u.startsWith('http://') || u.startsWith('https://'))
+  );
+}
+
+// Hard cap on tabs created by one restore (tab-bomb guard). A malicious
+// backup with tens of thousands of tabs would hang the browser in
+// chrome.tabs.create long before any of them is useful — refuse up front,
+// fail-closed, with a clear error instead of a partial restore.
+const MAX_RESTORE_TABS = 500;
 
 // ---------- bookmarks ----------
 
@@ -36,7 +55,10 @@ async function restoreBookmarks(data, opts, progress) {
         'Replace mode is destructive and requires explicit confirmation.'
       );
     }
-    progress && progress('bookmarks: replace mode — clearing existing bookmark bar / other bookmarks');
+    progress &&
+      progress(
+        'bookmarks: replace mode — clearing existing bookmark bar / other bookmarks'
+      );
     for (const rootId of [barId, otherId]) {
       const kids = await chrome.bookmarks.getChildren(rootId);
       for (const k of kids.slice().reverse()) {
@@ -45,7 +67,9 @@ async function restoreBookmarks(data, opts, progress) {
           else await chrome.bookmarks.removeTree(k.id);
         } catch (e) {
           stats.failed++;
-          stats.notes.push(`could not clear existing bookmark node ${k.id}}: ${e.message}`);
+          stats.notes.push(
+            `could not clear existing bookmark node ${k.id}: ${e.message}`
+          );
         }
       }
     }
@@ -77,9 +101,17 @@ async function restoreBookmarks(data, opts, progress) {
         const fid = await ensureFolder(parentId, child.title || '');
         if (mode === 'replace' && Array.isArray(child.children)) {
           // In replace mode the folder is freshly created, recreate exact order via index.
-          await restoreChildrenIndexed(child.children || [], fid, path + '/' + (child.title || ''));
+          await restoreChildrenIndexed(
+            child.children || [],
+            fid,
+            path + '/' + (child.title || '')
+          );
         } else {
-          await restoreChildren(child.children || [], fid, path + '/' + (child.title || ''));
+          await restoreChildren(
+            child.children || [],
+            fid,
+            path + '/' + (child.title || '')
+          );
         }
         await yieldToUI();
       } else if (child.url) {
@@ -95,11 +127,15 @@ async function restoreBookmarks(data, opts, progress) {
           const props = { parentId, title: child.title || '', url: child.url };
           if (mode === 'replace') props.index = idx;
           await chrome.bookmarks.create(props);
-          if (mode === 'merge') (await childrenOf(parentId)).push({ url: child.url, title: child.title });
+          if (mode === 'merge')
+            (await childrenOf(parentId)).push({
+              url: child.url,
+              title: child.title,
+            });
           stats.created++;
         } catch (e) {
           stats.failed++;
-          stats.notes.push(`bookmark failed: ${child.url}}: ${e.message}`);
+          stats.notes.push(`bookmark failed: ${child.url}: ${e.message}`);
         }
         idx++;
         if (stats.created % 50 === 0) {
@@ -114,15 +150,28 @@ async function restoreBookmarks(data, opts, progress) {
     let idx = 0;
     for (const child of children) {
       if (child.type === 'folder' || (!child.url && child.children)) {
-        const created = await chrome.bookmarks.create({ parentId, index: idx, title: child.title || '' });
-        await restoreChildrenIndexed(child.children || [], created.id, path + '/' + (child.title || ''));
+        const created = await chrome.bookmarks.create({
+          parentId,
+          index: idx,
+          title: child.title || '',
+        });
+        await restoreChildrenIndexed(
+          child.children || [],
+          created.id,
+          path + '/' + (child.title || '')
+        );
       } else if (child.url) {
         try {
-          await chrome.bookmarks.create({ parentId, index: idx, title: child.title || '', url: child.url });
+          await chrome.bookmarks.create({
+            parentId,
+            index: idx,
+            title: child.title || '',
+            url: child.url,
+          });
           stats.created++;
         } catch (e) {
           stats.failed++;
-          stats.notes.push(`bookmark failed: ${child.url}}: ${e.message}`);
+          stats.notes.push(`bookmark failed: ${child.url}: ${e.message}`);
         }
       }
       idx++;
@@ -139,16 +188,26 @@ async function restoreBookmarks(data, opts, progress) {
     if (rootKey === 'bookmark_bar') targetId = barId;
     else if (rootKey === 'other') targetId = otherId;
     else targetId = await ensureFolder(otherId, 'Mobile bookmarks');
-    if (mode === 'replace') await restoreChildrenIndexed(rootNode.children || [], targetId, '/' + rootKey);
-    else await restoreChildren(rootNode.children || [], targetId, '/' + rootKey);
+    if (mode === 'replace')
+      await restoreChildrenIndexed(
+        rootNode.children || [],
+        targetId,
+        '/' + rootKey
+      );
+    else
+      await restoreChildren(rootNode.children || [], targetId, '/' + rootKey);
     progress && progress(`bookmarks: root "${rootKey}" done`);
     await yieldToUI();
   }
 
   if (mode === 'merge') {
-    stats.notes.push('Merge mode: duplicates (same URL in same folder) skipped.');
+    stats.notes.push(
+      'Merge mode: duplicates (same URL in same folder) skipped.'
+    );
   }
-  stats.notes.push('dateAdded timestamps cannot be restored (bookmarks.create does not accept them — API limitation).');
+  stats.notes.push(
+    'dateAdded timestamps cannot be restored (bookmarks.create does not accept them — API limitation).'
+  );
   return {
     status: 'ok',
     stats,
@@ -173,9 +232,22 @@ export async function restoreTabsWindows(data, opts, progress) {
     notes: [],
   };
   const failedTabIndexes = new Set();
-  const groupMetaByOldId = new Map((data.tabGroups || []).map((g) => [String(g.groupId), g]));
+  const groupMetaByOldId = new Map(
+    (data.tabGroups || []).map((g) => [String(g.groupId), g])
+  );
 
   const windows = data.windows || [];
+  const totalTabs = windows.reduce(
+    (n, w) => n + ((w && w.tabs && w.tabs.length) || 0),
+    0
+  );
+  if (totalTabs > MAX_RESTORE_TABS) {
+    throw new TypedError(
+      'ERR_RESTORE_TOO_LARGE',
+      `Refusing to restore ${totalTabs} tabs (limit ${MAX_RESTORE_TABS}): ` +
+        'this looks like a malicious or corrupted backup file.'
+    );
+  }
   let androidWindow = null;
   let androidBaseIndex = 0;
   try {
@@ -184,7 +256,9 @@ export async function restoreTabsWindows(data, opts, progress) {
       androidWindow = await chrome.windows.getLastFocused({ populate: true });
       androidBaseIndex = (androidWindow.tabs || []).length;
       stats.windowsCreated = 1;
-      stats.notes.push('Android: backed-up windows were restored as background tabs in the current window.');
+      stats.notes.push(
+        'Android: backed-up windows were restored as background tabs in the current window.'
+      );
     }
   } catch (e) {
     /* use the standard window restore path where platform detection is unavailable */
@@ -193,7 +267,11 @@ export async function restoreTabsWindows(data, opts, progress) {
   for (let wi = 0; wi < windows.length; wi++) {
     const w = windows[wi];
     const state = VALID_STATES.includes(w.state) ? w.state : 'normal';
-    const createProps = { focused: false, type: w.type === 'popup' ? 'popup' : 'normal', state };
+    const createProps = {
+      focused: false,
+      type: w.type === 'popup' ? 'popup' : 'normal',
+      state,
+    };
     if (state === 'normal' && w.bounds && w.bounds.width && w.bounds.height) {
       createProps.left = w.bounds.left;
       createProps.top = w.bounds.top;
@@ -208,13 +286,17 @@ export async function restoreTabsWindows(data, opts, progress) {
         win = await chrome.windows.create(createProps);
       } catch (e) {
         stats.windowGeometryFailures++;
-        stats.notes.push(`window ${wi}} could not be created with geometry (${e.message}); retrying default`);
+        stats.notes.push(
+          `window ${wi} could not be created with geometry (${e.message}); retrying default`
+        );
         win = await chrome.windows.create({ focused: false });
       }
       stats.windowsCreated++;
     }
 
-    const initialTabId = androidWindow ? null : (win.tabs && win.tabs[0] && win.tabs[0].id) || null;
+    const initialTabId = androidWindow
+      ? null
+      : (win.tabs && win.tabs[0] && win.tabs[0].id) || null;
     // Ownership: only this placeholder tab — created by our own
     // windows.create above — may ever be closed, via safeCloseTab. A refusal
     // can only come from a bug — log it loudly and skip the close.
@@ -228,7 +310,10 @@ export async function restoreTabsWindows(data, opts, progress) {
           return 'gone';
         }
       },
-      (reason) => stats.notes.push(`SAFETY VIOLATION during window restore — ${reason}; close skipped`)
+      (reason) =>
+        stats.notes.push(
+          `SAFETY VIOLATION during window restore — ${reason}; close skipped`
+        )
     );
     if (initialTabId !== null) ownership.own(initialTabId);
     const orderOffset = androidWindow ? androidBaseIndex : 0;
@@ -247,7 +332,11 @@ export async function restoreTabsWindows(data, opts, progress) {
           try {
             // Stage 1: create all tab placeholders without starting page loads.
             // Android Cromite can otherwise serialize tab creation and navigation.
-            const created = await chrome.tabs.create({ windowId: win.id, url: 'about:blank', active: false });
+            const created = await chrome.tabs.create({
+              windowId: win.id,
+              url: 'about:blank',
+              active: false,
+            });
             stats.tabsCreated++;
             const record = { id: created.id, index: ti, tab: t };
             createdTabs.push(record);
@@ -255,7 +344,7 @@ export async function restoreTabsWindows(data, opts, progress) {
           } catch (e) {
             stats.tabsFailed++;
             failedTabIndexes.add(`${wi}:${ti}`);
-            stats.notes.push(`tab failed: ${t.url}}: ${e.message}`);
+            stats.notes.push(`tab failed: ${t.url}: ${e.message}`);
             return null;
           }
         })
@@ -268,13 +357,25 @@ export async function restoreTabsWindows(data, opts, progress) {
           const { id, index: ti, tab: t } = record;
           const jobs = [];
           if (t.url && t.url !== 'about:blank') {
-            jobs.push(
-              chrome.tabs.update(id, { url: t.url, active: false }).catch((e) => {
-                stats.tabsFailed++;
-                failedTabIndexes.add(`${wi}:${ti}`);
-                stats.notes.push(`tab navigation failed: ${t.url}: ${e.message}`);
-              })
-            );
+            if (!isRestorableHttpUrl(t.url)) {
+              stats.tabsFailed++;
+              failedTabIndexes.add(`${wi}:${ti}`);
+              stats.notes.push(
+                `tab navigation refused (non-http(s) URL): ${t.url}`
+              );
+            } else {
+              jobs.push(
+                chrome.tabs
+                  .update(id, { url: t.url, active: false })
+                  .catch((e) => {
+                    stats.tabsFailed++;
+                    failedTabIndexes.add(`${wi}:${ti}`);
+                    stats.notes.push(
+                      `tab navigation failed: ${t.url}: ${e.message}`
+                    );
+                  })
+              );
+            }
           }
           if (t.pinned)
             jobs.push(
@@ -320,7 +421,10 @@ export async function restoreTabsWindows(data, opts, progress) {
     createdTabs.sort((a, b) => a.index - b.index);
     for (const tab of createdTabs) {
       try {
-        await chrome.tabs.move(tab.id, { windowId: win.id, index: orderOffset + tab.index });
+        await chrome.tabs.move(tab.id, {
+          windowId: win.id,
+          index: orderOffset + tab.index,
+        });
       } catch (e) {
         failedTabIndexes.add(`${wi}:${tab.index}`);
         stats.notes.push(`tab ordering failed: ${tab.tab.url}: ${e.message}`);
@@ -334,26 +438,34 @@ export async function restoreTabsWindows(data, opts, progress) {
     }
 
     for (const [oldGid, groupedTabs] of tabsByOldGroup) {
-      const tabIds = groupedTabs.sort((a, b) => a.index - b.index).map((tab) => tab.id);
+      const tabIds = groupedTabs
+        .sort((a, b) => a.index - b.index)
+        .map((tab) => tab.id);
       try {
         // createProperties.windowId is REQUIRED: without it tabs.group() creates
         // the group in the CURRENT window and silently MOVES the tabs there.
-        const newGid = await chrome.tabs.group({ tabIds, createProperties: { windowId: win.id } });
+        const newGid = await chrome.tabs.group({
+          tabIds,
+          createProperties: { windowId: win.id },
+        });
         const meta = groupMetaByOldId.get(oldGid);
         if (meta) {
           const upd = { title: meta.title || '' };
           if (meta.color) upd.color = meta.color;
-          if (typeof meta.collapsed === 'boolean') upd.collapsed = meta.collapsed;
+          if (typeof meta.collapsed === 'boolean')
+            upd.collapsed = meta.collapsed;
           try {
             await chrome.tabGroups.update(newGid, upd);
           } catch (e) {
-            for (const tab of groupedTabs) failedTabIndexes.add(`${wi}:${tab.index}`);
+            for (const tab of groupedTabs)
+              failedTabIndexes.add(`${wi}:${tab.index}`);
             stats.notes.push(`group update failed: ${e.message}`);
           }
         }
         stats.grouped += tabIds.length;
       } catch (e) {
-        for (const tab of groupedTabs) failedTabIndexes.add(`${wi}:${tab.index}`);
+        for (const tab of groupedTabs)
+          failedTabIndexes.add(`${wi}:${tab.index}`);
         stats.notes.push(`grouping failed: ${e.message}`);
       }
     }
@@ -361,8 +473,13 @@ export async function restoreTabsWindows(data, opts, progress) {
     await yieldToUI();
   }
 
-  stats.notes.push('Tab titles/favicons are re-fetched by the browser (no API to set titles).');
-  const tabCount = windows.reduce((count, window) => count + (window.tabs || []).length, 0);
+  stats.notes.push(
+    'Tab titles/favicons are re-fetched by the browser (no API to set titles).'
+  );
+  const tabCount = windows.reduce(
+    (count, window) => count + (window.tabs || []).length,
+    0
+  );
   stats.outcomeCounts = {
     succeeded: tabCount - failedTabIndexes.size,
     failed: failedTabIndexes.size + stats.windowGeometryFailures,
@@ -380,15 +497,44 @@ export async function restoreTabsWindows(data, opts, progress) {
 async function restoreSessions(data, _opts, _progress) {
   const stats = { windowsReopened: 0, tabsReopened: 0, failed: 0, notes: [] };
   const items = (data && data.recentlyClosed) || [];
+  const totalTabs = items.reduce(
+    (n, item) =>
+      n +
+      (((item && item.window && item.window.tabs && item.window.tabs.length) ||
+        0) +
+        (item && item.tab ? 1 : 0)),
+    0
+  );
+  if (totalTabs > MAX_RESTORE_TABS) {
+    throw new TypedError(
+      'ERR_RESTORE_TOO_LARGE',
+      `Refusing to restore ${totalTabs} session tabs (limit ${MAX_RESTORE_TABS}): ` +
+        'this looks like a malicious or corrupted backup file.'
+    );
+  }
   for (const item of items) {
     try {
       if (item.window && item.window.tabs && item.window.tabs.length) {
-        const urls = item.window.tabs.map((t) => t.url).filter(Boolean);
-        await chrome.windows.create({ focused: false, url: urls });
-        stats.windowsReopened++;
-      } else if (item.tab && item.tab.url) {
+        const urls = item.window.tabs
+          .map((t) => t.url)
+          .filter(isRestorableHttpUrl);
+        if (!urls.length) {
+          stats.failed++;
+          stats.notes.push(
+            'session window skipped: no restorable http(s) URLs'
+          );
+        } else {
+          await chrome.windows.create({ focused: false, url: urls });
+          stats.windowsReopened++;
+        }
+      } else if (item.tab && isRestorableHttpUrl(item.tab.url)) {
         await chrome.tabs.create({ url: item.tab.url, active: false });
         stats.tabsReopened++;
+      } else if (item.tab && item.tab.url) {
+        stats.failed++;
+        stats.notes.push(
+          `session tab refused (non-http(s) URL): ${item.tab.url}`
+        );
       }
     } catch (e) {
       stats.failed++;
@@ -415,7 +561,7 @@ function cookieUrlFor(c) {
 
 // eslint-disable-next-line complexity -- TECH DEBT: complexity 33, refactoring risks behavior change
 async function restoreCookies(data, opts, progress) {
-  const stats = { set: 0, failed: 0, adjusted: 0, notes: [] };
+  const stats = { set: 0, failed: 0, adjusted: 0, skippedStale: 0, notes: [] };
   const cookies = (data && data.cookies) || [];
   for (let i = 0; i < cookies.length; i++) {
     const c = cookies[i];
@@ -435,13 +581,38 @@ async function restoreCookies(data, opts, progress) {
       }
       if (sameSite && sameSite !== 'unspecified') details.sameSite = sameSite;
       if (!c.hostOnly && c.domain) details.domain = c.domain;
-      if (!c.session && typeof c.expirationDate === 'number') details.expirationDate = c.expirationDate;
-      if (c.firstPartyDomain !== undefined) details.firstPartyDomain = c.firstPartyDomain;
+      if (!c.session && typeof c.expirationDate === 'number')
+        details.expirationDate = c.expirationDate;
+      if (c.firstPartyDomain !== undefined)
+        details.firstPartyDomain = c.firstPartyDomain;
       if (c.partitionKey !== undefined && c.partitionKey !== null) {
         details.partitionKey =
           typeof c.partitionKey === 'string'
             ? { topLevelSite: c.partitionKey, hasCrossSiteAncestor: false }
             : { hasCrossSiteAncestor: false, ...c.partitionKey };
+      }
+      // Never let a stale backup cookie overwrite a fresher live one:
+      // compare expirationDate (a live session cookie counts as infinitely
+      // fresh — the user's current state wins over an old snapshot).
+      const live = await chrome.cookies
+        .get({ url: details.url, name: c.name })
+        .catch(() => null);
+      if (live) {
+        const liveExp =
+          typeof live.expirationDate === 'number'
+            ? live.expirationDate
+            : Infinity;
+        const backupExp =
+          !c.session && typeof c.expirationDate === 'number'
+            ? c.expirationDate
+            : Infinity;
+        if (liveExp >= backupExp) {
+          stats.skippedStale++;
+          stats.notes.push(
+            `cookie skipped: fresher live cookie exists (name="${c.name}", domain ${c.domain})`
+          );
+          continue;
+        }
       }
       const done = await chrome.cookies.set(details);
       if (!done && c.partitionKey !== undefined && c.partitionKey !== null) {
@@ -459,7 +630,9 @@ async function restoreCookies(data, opts, progress) {
       // different, wrong cookie. See note above.)
       if (c.partitionKey !== undefined && c.partitionKey !== null) {
         stats.failed++;
-        stats.notes.push(`partitioned cookie failed: ${e.message || 'unknown'}`);
+        stats.notes.push(
+          `partitioned cookie failed: ${e.message || 'unknown'}`
+        );
         continue;
       }
       try {
@@ -471,14 +644,20 @@ async function restoreCookies(data, opts, progress) {
           secure: !!c.secure,
           httpOnly: !!c.httpOnly,
           ...(c.domain && !c.hostOnly ? { domain: c.domain } : {}),
-          ...(!c.session && typeof c.expirationDate === 'number' ? { expirationDate: c.expirationDate } : {}),
+          ...(!c.session && typeof c.expirationDate === 'number'
+            ? { expirationDate: c.expirationDate }
+            : {}),
         });
         stats.set++;
         stats.adjusted++;
-        stats.notes.push(`cookie restored without partition/firstParty attributes (name hidden).`);
+        stats.notes.push(
+          `cookie restored without partition/firstParty attributes (name hidden).`
+        );
       } catch (err) {
         stats.failed++;
-        stats.notes.push(`cookie failed: name="${c.name}" reason=${err.message}`);
+        stats.notes.push(
+          `cookie failed: name="${c.name}" reason=${err.message}`
+        );
       }
     }
     if (i % 100 === 0) {
@@ -496,7 +675,8 @@ async function restoreCookies(data, opts, progress) {
 // ---------- downloads ----------
 
 async function restoreDownloads(data, opts, progress) {
-  const mode = (opts && opts.mode) === 'redownload' ? 'redownload' : 'metadata-only';
+  const mode =
+    (opts && opts.mode) === 'redownload' ? 'redownload' : 'metadata-only';
   const stats = { redownloaded: 0, failed: 0, notes: [] };
   const items = (data && data.items) || [];
   if (mode === 'metadata-only') {
@@ -526,8 +706,14 @@ async function restoreDownloads(data, opts, progress) {
       await yieldToUI();
     }
   }
-  stats.notes.push('Re-downloaded items get NEW timestamps; original completion state is not reproducible.');
-  return { status: 'ok', stats, summary: `downloads: ${stats.redownloaded} re-downloaded, ${stats.failed} failed` };
+  stats.notes.push(
+    'Re-downloaded items get NEW timestamps; original completion state is not reproducible.'
+  );
+  return {
+    status: 'ok',
+    stats,
+    summary: `downloads: ${stats.redownloaded} re-downloaded, ${stats.failed} failed`,
+  };
 }
 
 // ---------- history (basic restore via addUrl) ----------
@@ -538,7 +724,13 @@ async function restoreHistory(data, opts, progress) {
   let existing = new Set();
   try {
     existing = new Set(
-      (await chrome.history.search({ text: '', startTime: 0, maxResults: 10000000 })).map((h) => h.url)
+      (
+        await chrome.history.search({
+          text: '',
+          startTime: 0,
+          maxResults: 10000000,
+        })
+      ).map((h) => h.url)
     );
   } catch (e) {
     /* empty */
@@ -581,8 +773,10 @@ async function restoreReadingList(data, opts, progress) {
   const entries = (data && data.entries) || [];
   let existing = new Set();
   const listAll = () => {
-    if (typeof chrome.readingList.query === 'function') return chrome.readingList.query({});
-    if (typeof chrome.readingList.getEntries === 'function') return chrome.readingList.getEntries({});
+    if (typeof chrome.readingList.query === 'function')
+      return chrome.readingList.query({});
+    if (typeof chrome.readingList.getEntries === 'function')
+      return chrome.readingList.getEntries({});
     return Promise.resolve([]);
   };
   try {
@@ -596,7 +790,11 @@ async function restoreReadingList(data, opts, progress) {
         stats.skippedExisting++;
         continue;
       }
-      await chrome.readingList.addEntry({ url: e.url, title: e.title || '', hasBeenRead: !!e.hasBeenRead });
+      await chrome.readingList.addEntry({
+        url: e.url,
+        title: e.title || '',
+        hasBeenRead: !!e.hasBeenRead,
+      });
       existing.add(e.url);
       stats.added++;
     } catch (err) {
@@ -608,7 +806,9 @@ async function restoreReadingList(data, opts, progress) {
       await yieldToUI();
     }
   }
-  stats.notes.push('creationTime/lastUpdateTime are assigned by the browser on add (no API to set them).');
+  stats.notes.push(
+    'creationTime/lastUpdateTime are assigned by the browser on add (no API to set them).'
+  );
   return {
     status: 'ok',
     stats,
@@ -630,12 +830,17 @@ async function restoreExtensionStorage(data, _opts, _progress) {
   const local = data.local && typeof data.local === 'object' ? data.local : {};
   const sync = data.sync && typeof data.sync === 'object' ? data.sync : {};
   const filteredLocal = Object.fromEntries(
-    Object.entries(local).filter(([key]) => EXTENSION_STORAGE_ALLOWLIST.includes(key))
+    Object.entries(local).filter(([key]) =>
+      EXTENSION_STORAGE_ALLOWLIST.includes(key)
+    )
   );
   const stats = {
     keysLocal: Object.keys(filteredLocal).length,
     keysSync: 0,
-    skippedKeys: Object.keys(local).length - Object.keys(filteredLocal).length + Object.keys(sync).length,
+    skippedKeys:
+      Object.keys(local).length -
+      Object.keys(filteredLocal).length +
+      Object.keys(sync).length,
     notes: [],
   };
   if (stats.keysLocal) {
@@ -655,7 +860,11 @@ function restoreExtensionsUnsupported(data) {
   return Promise.resolve({
     status: 'unsupported',
     summary: `installedExtensions: cannot restore — no public API to install extensions. Backup contains a checklist of ${n} extensions for manual reinstallation.`,
-    stats: { notes: ['Open chrome://extensions and the Chrome Web Store to reinstall manually.'] },
+    stats: {
+      notes: [
+        'Open chrome://extensions and the Chrome Web Store to reinstall manually.',
+      ],
+    },
   });
 }
 
@@ -692,57 +901,88 @@ function itemOutcomeCounts(cat, data, stats) {
   if (stats.outcomeCounts) return stats.outcomeCounts;
   switch (cat) {
     case 'bookmarks':
-      return { succeeded: count(stats.created), failed: count(stats.failed), skipped: count(stats.skippedExisting) };
+      return {
+        succeeded: count(stats.created),
+        failed: count(stats.failed),
+        skipped: count(stats.skippedExisting),
+      };
     case 'history':
       return {
         succeeded: count(stats.added),
         failed: count(stats.failed),
-        skipped: Math.max(0, items(data.items) - count(stats.added) - count(stats.failed)),
+        skipped: Math.max(
+          0,
+          items(data.items) - count(stats.added) - count(stats.failed)
+        ),
       };
     case 'sessions': {
-      const succeeded = count(stats.windowsReopened) + count(stats.tabsReopened);
+      const succeeded =
+        count(stats.windowsReopened) + count(stats.tabsReopened);
       return {
         succeeded,
         failed: count(stats.failed),
-        skipped: Math.max(0, items(data.recentlyClosed) - succeeded - count(stats.failed)),
+        skipped: Math.max(
+          0,
+          items(data.recentlyClosed) - succeeded - count(stats.failed)
+        ),
       };
     }
     case 'cookies':
       return {
         succeeded: count(stats.set),
         failed: count(stats.failed),
-        skipped: Math.max(0, items(data.cookies) - count(stats.set) - count(stats.failed)),
+        skipped: Math.max(
+          0,
+          items(data.cookies) - count(stats.set) - count(stats.failed)
+        ),
       };
     case 'downloads':
       return {
         succeeded: count(stats.redownloaded),
         failed: count(stats.failed),
-        skipped: Math.max(0, items(data.items) - count(stats.redownloaded) - count(stats.failed)),
+        skipped: Math.max(
+          0,
+          items(data.items) - count(stats.redownloaded) - count(stats.failed)
+        ),
       };
     case 'readingList':
       return {
         succeeded: count(stats.added),
         failed: count(stats.failed),
-        skipped: Math.max(0, items(data.entries) - count(stats.added) - count(stats.failed)),
+        skipped: Math.max(
+          0,
+          items(data.entries) - count(stats.added) - count(stats.failed)
+        ),
       };
     case 'extensionStorage':
-      return { succeeded: count(stats.keysLocal), failed: 0, skipped: count(stats.skippedKeys) };
+      return {
+        succeeded: count(stats.keysLocal),
+        failed: 0,
+        skipped: count(stats.skippedKeys),
+      };
     case 'siteData': {
       const notes = stats.notes || [];
       const partitionFailures = notes.filter(
         (note) =>
-          (note.startsWith('partition restore into ') && note.includes(' failed:')) ||
+          (note.startsWith('partition restore into ') &&
+            note.includes(' failed:')) ||
           note.startsWith('partitioned restore failed:')
       ).length;
       const sessionStorageFailures = notes.filter((note) =>
         note.startsWith('sessionStorage restore failed for ')
       ).length;
       const sessionStorageSkipped = notes.filter(
-        (note) => note.startsWith('sessionStorage of ') && note.includes(' NOT restored:')
+        (note) =>
+          note.startsWith('sessionStorage of ') &&
+          note.includes(' NOT restored:')
       ).length;
       return {
-        succeeded: count(stats.originsRestored) + count(stats.partitionsRestored),
-        failed: count(stats.originsFailed) + partitionFailures + sessionStorageFailures,
+        succeeded:
+          count(stats.originsRestored) + count(stats.partitionsRestored),
+        failed:
+          count(stats.originsFailed) +
+          partitionFailures +
+          sessionStorageFailures,
         skipped: count(stats.partitionsWithoutHost) + sessionStorageSkipped,
       };
     }
@@ -798,20 +1038,28 @@ export async function restoreAll(backup, options, progress) {
     }
     if (progress) progress(`restoring: ${cat}`, cat, 'running');
     try {
-      const result = await fn(data[cat], opts, (msg) => progress && progress(msg, cat, 'running'));
+      const result = await fn(
+        data[cat],
+        opts,
+        (msg) => progress && progress(msg, cat, 'running')
+      );
       if (result.status === 'unsupported') {
         results[cat] = { ...result, outcome: 'unavailable' };
       } else {
         const stats = result.stats || {};
         const outcomeCounts = itemOutcomeCounts(cat, data[cat], stats);
-        results[cat] = { ...result, outcome: outcomeFor(outcomeCounts), stats: { ...stats, outcomeCounts } };
+        results[cat] = {
+          ...result,
+          outcome: outcomeFor(outcomeCounts),
+          stats: { ...stats, outcomeCounts },
+        };
       }
       if (progress) progress(`restored: ${cat}`, cat, 'ok');
     } catch (e) {
       results[cat] = {
         status: 'error',
         outcome: 'failed',
-        summary: `${cat}}: ${(e && e.message) || String(e)}`,
+        summary: `${cat}: ${(e && e.message) || String(e)}`,
         stats: { outcomeCounts: { succeeded: 0, failed: 1, skipped: 0 } },
       };
     }
