@@ -2,7 +2,11 @@
 // via opts.onLogEntry) plus entries loaded from IndexedDB. Single shared
 // state for the Log page — no duplication.
 import { useSyncExternalStore } from 'react';
-import { clearPersistedSiteLog, querySiteLog, formatLogTs } from '@/lib/site-log';
+import {
+  clearPersistedSiteLog,
+  querySiteLog,
+  formatLogTs,
+} from '@/lib/site-log';
 import { patchState, setState, withDashboardActivity } from './store';
 
 export type SiteLogEntry = {
@@ -40,7 +44,8 @@ export function pushSiteLogEntry(entry: SiteLogEntryInput) {
   const normalized = { ...entry, id: entry.id || crypto.randomUUID() };
   entries.push(normalized);
   if (entries.length > MAX_LIVE) entries = entries.slice(-MAX_LIVE);
-  if (normalized.level === 'ERROR' || normalized.level === 'FATAL') unseenError = true;
+  if (normalized.level === 'ERROR' || normalized.level === 'FATAL')
+    unseenError = true;
   emit();
 }
 
@@ -58,7 +63,9 @@ function resetSiteLogState() {
   unseenError = false;
   setState({ logLines: [] });
   patchState('backup', (backup) =>
-    backup.siteScan ? { ...backup, siteScan: { ...backup.siteScan, logUnseenError: false } } : backup
+    backup.siteScan
+      ? { ...backup, siteScan: { ...backup.siteScan, logUnseenError: false } }
+      : backup
   );
   emit();
 }
@@ -66,7 +73,11 @@ function resetSiteLogState() {
 if (typeof window !== 'undefined') {
   clearChannel?.addEventListener('message', (event: MessageEvent) => {
     const message = event.data as { type?: unknown; sourceId?: unknown };
-    if (message?.type !== 'cleared' || typeof message.sourceId !== 'string' || message.sourceId === clearPageId) {
+    if (
+      message?.type !== 'cleared' ||
+      typeof message.sourceId !== 'string' ||
+      message.sourceId === clearPageId
+    ) {
       return;
     }
     loadGeneration += 1;
@@ -110,7 +121,9 @@ export function useUnseenSiteLogError(): boolean {
 }
 
 // Load persisted entries from IndexedDB (survives dashboard close/crash).
-export async function loadPersistedSiteLog(limit = 500): Promise<SiteLogEntry[]> {
+export async function loadPersistedSiteLog(
+  limit = 500
+): Promise<SiteLogEntry[]> {
   const generation = loadGeneration;
   await pendingClear;
   const rows = await querySiteLog({ limit });

@@ -59,11 +59,14 @@ export const CLOUD_STATUS_TEXT: Record<string, string> = {
   'restore-successful': 'Restore successful',
   'restore-failed': 'Restore failed',
   'auth-failed': 'Authentication failed — check the personal access token',
-  'repo-not-found': 'Repository not found — check owner, name, branch and token permissions',
-  'public-requires-encryption': 'Public repository requires encryption — plaintext upload was refused',
+  'repo-not-found':
+    'Repository not found — check owner, name, branch and token permissions',
+  'public-requires-encryption':
+    'Public repository requires encryption — plaintext upload was refused',
   'wrong-password': 'Wrong encryption password',
   'corrupted-backup': 'Corrupted backup',
-  'unsupported-version': 'Backup uses an unsupported format or encryption version',
+  'unsupported-version':
+    'Backup uses an unsupported format or encryption version',
   'password-unavailable':
     'No encryption password available for this run — open the dashboard once to enable scheduled encrypted backups',
   'network-error': 'Network error',
@@ -100,7 +103,10 @@ function cloudConfigFromForm() {
 
 function notifyScheduleCheck() {
   try {
-    chrome.runtime.sendMessage({ type: 'bbr:check-schedule' }, () => void chrome.runtime.lastError);
+    chrome.runtime.sendMessage(
+      { type: 'bbr:check-schedule' },
+      () => void chrome.runtime.lastError
+    );
   } catch (e) {
     /* SW unavailable */
   }
@@ -145,9 +151,15 @@ async function refreshCloudUI() {
   }
 
   const sched = info.schedulerState || {};
-  const lastSuccess = sched.lastSuccessfulBackupAt ? new Date(sched.lastSuccessfulBackupAt).toLocaleString() : 'never';
-  const lastAttempt = sched.lastAttempt ? new Date(sched.lastAttempt).toLocaleString() : 'never';
-  const errPart = sched.lastError ? ` — last error: [${sched.lastError.code}]` : '';
+  const lastSuccess = sched.lastSuccessfulBackupAt
+    ? new Date(sched.lastSuccessfulBackupAt).toLocaleString()
+    : 'never';
+  const lastAttempt = sched.lastAttempt
+    ? new Date(sched.lastAttempt).toLocaleString()
+    : 'never';
+  const errPart = sched.lastError
+    ? ` — last error: [${sched.lastError.code}]`
+    : '';
   const schedule = info.config.schedule;
   const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const cadence =
@@ -198,22 +210,38 @@ export async function onCloudConnect() {
       // policy shown in the UI — the real enforcement lives in the storage layer
       updateForm({ encryption: 'enabled' });
     }
-    appendLog(`cloud: connected to ${info.repo.fullName} (${info.repo.private ? 'private' : 'public'})`);
+    appendLog(
+      `cloud: connected to ${info.repo.fullName} (${info.repo.private ? 'private' : 'public'})`
+    );
   } catch (e: any) {
     const st = statusFromError(e) || 'upload-failed';
-    patchState('cloud', (c) => ({ ...c, repoInfoError: CLOUD_STATUS_TEXT[st] || errMessage(e) }));
+    patchState('cloud', (c) => ({
+      ...c,
+      repoInfoError: CLOUD_STATUS_TEXT[st] || errMessage(e),
+    }));
     appendLog(`cloud connect failed: [${errCode(e)}] ${errMessage(e)}`);
   }
 }
 
 // ---------------- manual cloud backup ----------------
 
-export function onCloudBackupNow(trigger = 'manual', destination: 'both' | 'cloud-only' = 'both') {
-  return withDashboardActivity('cloud-backup', () => onCloudBackupNowUnlocked(trigger, destination));
+export function onCloudBackupNow(
+  trigger = 'manual',
+  destination: 'both' | 'cloud-only' = 'both'
+) {
+  return withDashboardActivity('cloud-backup', () =>
+    onCloudBackupNowUnlocked(trigger, destination)
+  );
 }
 
-async function onCloudBackupNowUnlocked(trigger = 'manual', destination: 'both' | 'cloud-only' = 'both') {
-  patchState('cloud', (c) => ({ ...c, progress: { visible: true, frac: 0.05 } }));
+async function onCloudBackupNowUnlocked(
+  trigger = 'manual',
+  destination: 'both' | 'cloud-only' = 'both'
+) {
+  patchState('cloud', (c) => ({
+    ...c,
+    progress: { visible: true, frac: 0.05 },
+  }));
   const cfg = cloudConfigFromForm();
   await saveCloudConfig(cfg);
   savedToken = cfg.github.token;
@@ -223,7 +251,10 @@ async function onCloudBackupNowUnlocked(trigger = 'manual', destination: 'both' 
     pw = await askPassword('new');
     if (!pw) {
       appendLog('cloud backup cancelled: no password');
-      patchState('cloud', (c) => ({ ...c, progress: { visible: false, frac: 0 } }));
+      patchState('cloud', (c) => ({
+        ...c,
+        progress: { visible: false, frac: 0 },
+      }));
       return;
     }
   } else {
@@ -232,7 +263,10 @@ async function onCloudBackupNowUnlocked(trigger = 'manual', destination: 'both' 
     );
     if (!ok) {
       appendLog('cloud backup cancelled: plaintext not confirmed');
-      patchState('cloud', (c) => ({ ...c, progress: { visible: false, frac: 0 } }));
+      patchState('cloud', (c) => ({
+        ...c,
+        progress: { visible: false, frac: 0 },
+      }));
       return;
     }
   }
@@ -241,7 +275,8 @@ async function onCloudBackupNowUnlocked(trigger = 'manual', destination: 'both' 
   try {
     const r = await runCloudBackup({
       collectBackup: buildCloudBackupObject,
-      onProgress: (m: string) => patchState('cloud', (c) => ({ ...c, detail: m })),
+      onProgress: (m: string) =>
+        patchState('cloud', (c) => ({ ...c, detail: m })),
       password: pw,
       useSessionPassword: true,
       plaintextAck: enc === 'disabled',
@@ -249,6 +284,7 @@ async function onCloudBackupNowUnlocked(trigger = 'manual', destination: 'both' 
       destination,
       preserveLocalCopy: false,
       autoRetryCloud: cfg.autoRetryCloud,
+      rememberPassword: getState().cloud.form.rememberPw,
       downloadArtifact:
         destination === 'both'
           ? async (artifact: any) => {
@@ -261,7 +297,10 @@ async function onCloudBackupNowUnlocked(trigger = 'manual', destination: 'both' 
             }
           : null,
     } as any);
-    patchState('cloud', (c) => ({ ...c, progress: { ...c.progress, frac: 1 } }));
+    patchState('cloud', (c) => ({
+      ...c,
+      progress: { ...c.progress, frac: 1 },
+    }));
     const delivery =
       destination === 'both'
         ? r.localDownloadError
@@ -274,10 +313,18 @@ async function onCloudBackupNowUnlocked(trigger = 'manual', destination: 'both' 
     }));
     appendLog(`cloud backup finished: ${r.artifactId}`);
   } catch (e: any) {
-    patchState('cloud', (c) => ({ ...c, progress: { visible: true, frac: 0 } }));
+    patchState('cloud', (c) => ({
+      ...c,
+      progress: { visible: true, frac: 0 },
+    }));
     const st = statusFromError(e) || 'upload-failed';
-    const localPart = localDownload ? `Local file saved as ${(localDownload as any).filename}. ` : '';
-    patchState('cloud', (c) => ({ ...c, status: `${localPart}${CLOUD_STATUS_TEXT[st] || st}` }));
+    const localPart = localDownload
+      ? `Local file saved as ${(localDownload as any).filename}. `
+      : '';
+    patchState('cloud', (c) => ({
+      ...c,
+      status: `${localPart}${CLOUD_STATUS_TEXT[st] || st}`,
+    }));
     appendLog(
       `cloud backup failed: [${errCode(e)}] ${errMessage(e)}${localDownload ? ' (local file remains available)' : ''}`
     );
@@ -288,26 +335,41 @@ async function onCloudBackupNowUnlocked(trigger = 'manual', destination: 'both' 
 // ---------------- remote list / restore / delete ----------------
 
 export async function onCloudRestore() {
-  patchState('cloud', (c) => ({ ...c, remoteList: { loading: true, error: null, refs: [] } }));
+  patchState('cloud', (c) => ({
+    ...c,
+    remoteList: { loading: true, error: null, refs: [] },
+  }));
   try {
     const refs = await listCloudBackups();
     if (!refs.length) {
-      patchState('cloud', (c) => ({ ...c, remoteList: { loading: false, error: null, refs: [] } }));
+      patchState('cloud', (c) => ({
+        ...c,
+        remoteList: { loading: false, error: null, refs: [] },
+      }));
       return;
     }
     const list: RemoteRef[] = refs.map((r: any) => ({
       id: r.id,
       createdAt: r.createdAt || '—',
-      sizeLabel: r.sizeBytes != null ? `${(r.sizeBytes / 1024).toFixed(1)} KB` : '—',
-      encrypted: r.encrypted === true ? true : r.encrypted === false ? false : null,
+      sizeLabel:
+        r.sizeBytes != null ? `${(r.sizeBytes / 1024).toFixed(1)} KB` : '—',
+      encrypted:
+        r.encrypted === true ? true : r.encrypted === false ? false : null,
       formatVersion: r.formatVersion || null,
     }));
-    patchState('cloud', (c) => ({ ...c, remoteList: { loading: false, error: null, refs: list } }));
+    patchState('cloud', (c) => ({
+      ...c,
+      remoteList: { loading: false, error: null, refs: list },
+    }));
   } catch (e: any) {
     const st = statusFromError(e) || 'restore-failed';
     patchState('cloud', (c) => ({
       ...c,
-      remoteList: { loading: false, error: CLOUD_STATUS_TEXT[st] || errMessage(e), refs: [] },
+      remoteList: {
+        loading: false,
+        error: CLOUD_STATUS_TEXT[st] || errMessage(e),
+        refs: [],
+      },
     }));
     appendLog(`cloud list failed: [${errCode(e)}] ${errMessage(e)}`);
   }
@@ -321,7 +383,11 @@ async function onCloudRestorePickUnlocked(id: string) {
   try {
     const refs = await listCloudBackups();
     const ref = refs.find((r: any) => r.id === id);
-    if (!ref) throw new TypedError('ERR_NOT_FOUND', `Backup "${id}" not found remotely.`);
+    if (!ref)
+      throw new TypedError(
+        'ERR_NOT_FOUND',
+        `Backup "${id}" not found remotely.`
+      );
     let pw: string | null = null;
     if (ref.encrypted === true) {
       pw = await askPassword('existing');
@@ -331,7 +397,10 @@ async function onCloudRestorePickUnlocked(id: string) {
       }
     }
     patchState('cloud', (c) => ({ ...c, status: 'Downloading…' }));
-    const { text } = await downloadAndValidateBackup(ref as any, { password: pw } as any);
+    const { text } = await downloadAndValidateBackup(
+      ref as any,
+      { password: pw } as any
+    );
     appendLog(`cloud: downloaded ${id}, opening restore flow`);
     await openRestoreFlow(text, pw);
   } catch (e: any) {
@@ -363,22 +432,29 @@ export async function onCloudDeletePick(id: string) {
 // ---------------- scheduled / retry runs ----------------
 
 function runScheduledCloudBackup(reason: string) {
-  return withDashboardActivity('cloud-backup', () => runScheduledCloudBackupUnlocked(reason));
+  return withDashboardActivity('cloud-backup', () =>
+    runScheduledCloudBackupUnlocked(reason)
+  );
 }
 
 async function runScheduledCloudBackupUnlocked(reason: string) {
-  patchState('cloud', (c) => ({ ...c, progress: { visible: true, frac: 0.05 } }));
+  patchState('cloud', (c) => ({
+    ...c,
+    progress: { visible: true, frac: 0.05 },
+  }));
   appendLog(`scheduled cloud backup starting (${reason})`);
   patchState('cloud', (c) => ({ ...c, status: 'Backing up (scheduled)…' }));
   try {
     const cfg = await loadCloudConfig();
     const r = await runCloudBackup({
       collectBackup: buildCloudBackupObject,
-      onProgress: (m: string) => patchState('cloud', (c) => ({ ...c, detail: m })),
+      onProgress: (m: string) =>
+        patchState('cloud', (c) => ({ ...c, detail: m })),
       password: null,
       useSessionPassword: true,
       plaintextAck: cfg.encryption === 'disabled', // choice recorded at configuration time
       trigger: 'scheduled',
+      rememberPassword: getState().cloud.form.rememberPw,
     } as any);
     patchState('cloud', (c) => ({
       ...c,
@@ -396,7 +472,9 @@ async function runScheduledCloudBackupUnlocked(reason: string) {
   } catch (e: any) {
     const st = statusFromError(e) || 'upload-failed';
     patchState('cloud', (c) => ({ ...c, status: CLOUD_STATUS_TEXT[st] || st }));
-    appendLog(`scheduled backup failed: [${errCode(e)}] ${errMessage(e)} — the tab stays open so this is visible`);
+    appendLog(
+      `scheduled backup failed: [${errCode(e)}] ${errMessage(e)} — the tab stays open so this is visible`
+    );
   }
   await refreshCloudUI();
 }
@@ -415,12 +493,14 @@ async function runAutomaticCloudRetryUnlocked() {
     const cfg = await loadCloudConfig();
     const r = await runCloudBackup({
       collectBackup: buildCloudBackupObject,
-      onProgress: (m: string) => patchState('cloud', (c) => ({ ...c, detail: m })),
+      onProgress: (m: string) =>
+        patchState('cloud', (c) => ({ ...c, detail: m })),
       useSessionPassword: true,
       plaintextAck: cfg.encryption === 'disabled',
       trigger: 'auto-retry',
       destination: 'cloud-only',
       preserveLocalCopy: false,
+      rememberPassword: false, // auto-retry only reads the session password; it never decides to keep a new one
       autoRetryCloud: true,
     } as any);
     patchState('cloud', (c) => ({
@@ -449,18 +529,27 @@ export function onRetrySync() {
 }
 
 async function onRetrySyncUnlocked() {
-  patchState('cloud', (c) => ({ ...c, progress: { visible: true, frac: 0.05 }, status: 'Syncing pending upload…' }));
+  patchState('cloud', (c) => ({
+    ...c,
+    progress: { visible: true, frac: 0.05 },
+    status: 'Syncing pending upload…',
+  }));
   try {
     const cfg = await loadCloudConfig();
     const r = await runCloudBackup({
       collectBackup: buildCloudBackupObject,
-      onProgress: (m: string) => patchState('cloud', (c) => ({ ...c, detail: m })),
+      onProgress: (m: string) =>
+        patchState('cloud', (c) => ({ ...c, detail: m })),
       password: null,
       useSessionPassword: true,
       plaintextAck: cfg.encryption === 'disabled',
       trigger: 'sync-retry',
+      rememberPassword: false, // sync-retry only reads the session password; it never decides to keep a new one
     } as any);
-    patchState('cloud', (c) => ({ ...c, status: `Upload successful — ${r.artifactId}` }));
+    patchState('cloud', (c) => ({
+      ...c,
+      status: `Upload successful — ${r.artifactId}`,
+    }));
     appendLog(`pending upload synced: ${r.artifactId}`);
   } catch (e: any) {
     const st = statusFromError(e) || 'upload-failed';
@@ -472,7 +561,9 @@ async function onRetrySyncUnlocked() {
 
 export async function onCancelRetry() {
   await cancelPendingCloudRetry();
-  appendLog('automatic retry cancelled; pending artifact remains available for manual sync');
+  appendLog(
+    'automatic retry cancelled; pending artifact remains available for manual sync'
+  );
   await refreshCloudUI();
 }
 
@@ -484,9 +575,15 @@ export async function exportSettingsFile() {
     const file = buildSettingsExport(config);
     const name = `browser-backup-settings-${new Date().toISOString().slice(0, 10)}.json`;
     await saveTextFile(JSON.stringify(file, null, 2), name);
-    patchState('cloud', (c) => ({ ...c, settingsStatus: 'Settings exported. The GitHub token is not included.' }));
+    patchState('cloud', (c) => ({
+      ...c,
+      settingsStatus: 'Settings exported. The GitHub token is not included.',
+    }));
   } catch (e: any) {
-    patchState('cloud', (c) => ({ ...c, settingsStatus: `Settings export failed: ${errMessage(e)}` }));
+    patchState('cloud', (c) => ({
+      ...c,
+      settingsStatus: `Settings export failed: ${errMessage(e)}`,
+    }));
   }
 }
 
@@ -501,12 +598,19 @@ export async function importSettingsFile(file: File | null) {
     notifyScheduleCheck();
     patchState('cloud', (c) => ({
       ...c,
-      settingsStatus: 'Settings imported. The existing GitHub token was preserved.',
+      settingsStatus:
+        'Settings imported. The existing GitHub token was preserved.',
     }));
   } catch (e: any) {
-    patchState('cloud', (c) => ({ ...c, settingsStatus: `Settings import failed: ${errMessage(e)}` }));
+    patchState('cloud', (c) => ({
+      ...c,
+      settingsStatus: `Settings import failed: ${errMessage(e)}`,
+    }));
   } finally {
-    patchState('cloud', (c) => ({ ...c, settingsImportKey: c.settingsImportKey + 1 }));
+    patchState('cloud', (c) => ({
+      ...c,
+      settingsImportKey: c.settingsImportKey + 1,
+    }));
   }
 }
 

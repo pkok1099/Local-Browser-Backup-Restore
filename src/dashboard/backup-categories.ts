@@ -14,7 +14,11 @@ export async function loadSiteDataScanWindow(): Promise<number> {
   try {
     const stored = await chrome.storage.local.get(SITE_DATA_SCAN_WINDOW_KEY);
     const n = Math.floor(Number(stored[SITE_DATA_SCAN_WINDOW_KEY]));
-    if (Number.isFinite(n)) return Math.min(SITE_DATA_SCAN_WINDOW_MAX, Math.max(SITE_DATA_SCAN_WINDOW_MIN, n));
+    if (Number.isFinite(n))
+      return Math.min(
+        SITE_DATA_SCAN_WINDOW_MAX,
+        Math.max(SITE_DATA_SCAN_WINDOW_MIN, n)
+      );
   } catch (e) {
     /* ignore */
   }
@@ -24,7 +28,10 @@ export async function loadSiteDataScanWindow(): Promise<number> {
 export async function saveSiteDataScanWindow(n: number): Promise<void> {
   const v = Math.min(
     SITE_DATA_SCAN_WINDOW_MAX,
-    Math.max(SITE_DATA_SCAN_WINDOW_MIN, Math.floor(Number(n) || SITE_DATA_SCAN_WINDOW_DEFAULT))
+    Math.max(
+      SITE_DATA_SCAN_WINDOW_MIN,
+      Math.floor(Number(n) || SITE_DATA_SCAN_WINDOW_DEFAULT)
+    )
   );
   await chrome.storage.local.set({ [SITE_DATA_SCAN_WINDOW_KEY]: v });
 }
@@ -63,7 +70,11 @@ export async function loadSiteDataTuning(): Promise<SiteDataTuning> {
           TUNING_BOUNDS.retryMaxAttempts,
           SITE_DATA_TUNING_DEFAULT.retryMaxAttempts
         ),
-        readTimeoutMs: clamp(v.readTimeoutMs, TUNING_BOUNDS.readTimeoutMs, SITE_DATA_TUNING_DEFAULT.readTimeoutMs),
+        readTimeoutMs: clamp(
+          v.readTimeoutMs,
+          TUNING_BOUNDS.readTimeoutMs,
+          SITE_DATA_TUNING_DEFAULT.readTimeoutMs
+        ),
         checkpointEveryOrigins: clamp(
           v.checkpointEveryOrigins,
           TUNING_BOUNDS.checkpointEveryOrigins,
@@ -102,36 +113,52 @@ export const BACKUP_CATEGORIES = [
 
 export type BackupCategoryId = (typeof BACKUP_CATEGORIES)[number]['id'];
 
-const ALL_CATEGORY_IDS = BACKUP_CATEGORIES.map((category) => category.id) as BackupCategoryId[];
+const ALL_CATEGORY_IDS = BACKUP_CATEGORIES.map(
+  (category) => category.id
+) as BackupCategoryId[];
 
 export async function loadBackupCategories(): Promise<BackupCategoryId[]> {
   try {
     const stored = await chrome.storage.local.get(BACKUP_CATEGORY_STORAGE_KEY);
     const value = stored[BACKUP_CATEGORY_STORAGE_KEY];
     if (!Array.isArray(value)) return [...ALL_CATEGORY_IDS];
-    return value.filter((id: unknown): id is BackupCategoryId => ALL_CATEGORY_IDS.includes(id as BackupCategoryId));
+    return value.filter((id: unknown): id is BackupCategoryId =>
+      ALL_CATEGORY_IDS.includes(id as BackupCategoryId)
+    );
   } catch (e) {
     return [...ALL_CATEGORY_IDS];
   }
 }
 
-export async function saveBackupCategories(categories: BackupCategoryId[]): Promise<void> {
+export async function saveBackupCategories(
+  categories: BackupCategoryId[]
+): Promise<void> {
   const valid = categories.filter((id) => ALL_CATEGORY_IDS.includes(id));
-  await chrome.storage.local.set({ [BACKUP_CATEGORY_STORAGE_KEY]: [...new Set(valid)] });
+  await chrome.storage.local.set({
+    [BACKUP_CATEGORY_STORAGE_KEY]: [...new Set(valid)],
+  });
 }
 
 export async function loadIncludedSiteOrigins(): Promise<string[] | null> {
   try {
-    const stored = await chrome.storage.local.get(SITE_DATA_INCLUDED_ORIGINS_KEY);
+    const stored = await chrome.storage.local.get(
+      SITE_DATA_INCLUDED_ORIGINS_KEY
+    );
     const value = stored[SITE_DATA_INCLUDED_ORIGINS_KEY];
-    return Array.isArray(value) ? value.filter((origin: unknown) => typeof origin === 'string') : null;
+    return Array.isArray(value)
+      ? value.filter((origin: unknown) => typeof origin === 'string')
+      : null;
   } catch (e) {
     return null;
   }
 }
 
-export async function saveIncludedSiteOrigins(origins: string[]): Promise<void> {
-  await chrome.storage.local.set({ [SITE_DATA_INCLUDED_ORIGINS_KEY]: [...new Set(origins)] });
+export async function saveIncludedSiteOrigins(
+  origins: string[]
+): Promise<void> {
+  await chrome.storage.local.set({
+    [SITE_DATA_INCLUDED_ORIGINS_KEY]: [...new Set(origins)],
+  });
 }
 
 // ---- Non-restorable site-data sub-categories ----

@@ -37,13 +37,17 @@ export async function loadRouteChunk<T>(
   try {
     const module = await load();
     try {
-      (options.storage === undefined ? getSessionStorage() : options.storage)?.removeItem(retryKey(route));
+      (options.storage === undefined
+        ? getSessionStorage()
+        : options.storage
+      )?.removeItem(retryKey(route));
     } catch {
       // Storage is only a loop guard; a successfully loaded chunk must render.
     }
     return module;
   } catch (error) {
-    const storage = options.storage === undefined ? getSessionStorage() : options.storage;
+    const storage =
+      options.storage === undefined ? getSessionStorage() : options.storage;
     if (storage) {
       try {
         if (storage.getItem(retryKey(route)) !== '1') {
@@ -60,8 +64,12 @@ export async function loadRouteChunk<T>(
 }
 
 /** Clear the one-shot guard and explicitly retry by reloading the dashboard. */
-export function retryRouteChunk(route: string, options: RecoveryOptions = {}): void {
-  const storage = options.storage === undefined ? getSessionStorage() : options.storage;
+export function retryRouteChunk(
+  route: string,
+  options: RecoveryOptions = {}
+): void {
+  const storage =
+    options.storage === undefined ? getSessionStorage() : options.storage;
   try {
     storage?.removeItem(retryKey(route));
   } catch {

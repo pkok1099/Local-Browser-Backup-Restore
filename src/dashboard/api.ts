@@ -6,7 +6,9 @@ import { getState, patchState } from './store';
 
 const w = window as unknown as Record<string, unknown>;
 const apiOperation = (name: string, ...args: any[]) =>
-  import('./api-operations').then((operations: any) => operations[name](...args));
+  import('./api-operations').then((operations: any) =>
+    operations[name](...args)
+  );
 
 function dashboardStateForTests() {
   const { activeOperations, backup, restore } = getState();
@@ -28,11 +30,16 @@ export function installTestHooks() {
     },
     detect: async () => (await import('@/lib/capabilities')).detect(),
     probe: () => apiOperation('probe'),
-    collectAll: (onProgress: any, options: any) => apiOperation('collectAll', onProgress, options),
+    collectAll: (onProgress: any, options: any) =>
+      apiOperation('collectAll', onProgress, options),
     buildBackupObject: (onProgress: any, collectOptions: any) =>
       apiOperation('buildBackupObject', onProgress, collectOptions),
     // Full user-facing pipeline: collect -> finalize -> (encrypt) -> download file.
-    runBackupToFile: async ({ encrypt = false, password = null, collectOptions = null } = {}) => {
+    runBackupToFile: async ({
+      encrypt = false,
+      password = null,
+      collectOptions = null,
+    } = {}) => {
       const logic = await import('./logic');
       const r = await logic.doBackup({ encrypt, password, collectOptions });
       // No auto-download: the test explicitly triggers the download (like the UI button).
@@ -59,7 +66,8 @@ export function installTestHooks() {
       return { ok: true };
     },
     dashboardState: dashboardStateForTests,
-    clearBackupResults: async () => (await import('./logic')).clearBackupResults(),
+    clearBackupResults: async () =>
+      (await import('./logic')).clearBackupResults(),
     seedDashboardState: ({ backup, restore }: any) => {
       if (backup) patchState('backup', backup);
       if (restore) patchState('restore', restore);
@@ -67,7 +75,8 @@ export function installTestHooks() {
     },
     encryptBackup: async (backupObj: any, password: string) =>
       (await import('@/lib/crypto')).encryptBackup(backupObj, password),
-    validate: async (text: string, opts: any) => (await import('@/lib/validate')).validateBackupFile(text, opts || {}),
+    validate: async (text: string, opts: any) =>
+      (await import('@/lib/validate')).validateBackupFile(text, opts || {}),
     // ---------------- cloud hooks (automated tests) ----------------
     cloud: {
       saveConfig: async (raw: any) => {
@@ -80,28 +89,45 @@ export function installTestHooks() {
         return redactConfig(await loadCloudConfig());
       },
       connect: async () => {
-        const { loadCloudConfig, createProviderFromConfig } = await import('@/lib/cloud');
+        const { loadCloudConfig, createProviderFromConfig } =
+          await import('@/lib/cloud');
         const provider = createProviderFromConfig(await loadCloudConfig());
         return provider.connect();
       },
       runBackup: (options: any = {}) => apiOperation('runCloudBackup', options),
       listBackups: async () => (await import('@/lib/cloud')).listCloudBackups(),
-      download: (refId: string, options: any = {}) => apiOperation('downloadCloudBackup', refId, options),
-      restoreFromCloud: (refId: string, options: any = {}) => apiOperation('restoreFromCloud', refId, options),
+      download: (refId: string, options: any = {}) =>
+        apiOperation('downloadCloudBackup', refId, options),
+      restoreFromCloud: (refId: string, options: any = {}) =>
+        apiOperation('restoreFromCloud', refId, options),
       info: async () => (await import('@/lib/cloud')).getCloudInfo(),
       cloudState: async () => (await import('@/lib/cloud')).getCloudState(),
     },
     scheduler: {
       decide: async ({ now = null } = {}) => {
-        const [cloud, scheduler] = await Promise.all([import('@/lib/cloud'), import('@/lib/scheduler')]);
+        const [cloud, scheduler] = await Promise.all([
+          import('@/lib/cloud'),
+          import('@/lib/scheduler'),
+        ]);
         const cfg: any = await cloud.loadCloudConfig();
         const st: any = await scheduler.loadSchedulerState();
-        return scheduler.isBackupDue(cfg.schedule, st, now ? new Date(now) : new Date());
+        return scheduler.isBackupDue(
+          cfg.schedule,
+          st,
+          now ? new Date(now) : new Date()
+        );
       },
-      getState: async () => (await import('@/lib/scheduler')).loadSchedulerState(),
-      setState: async (s: any) => (await import('@/lib/scheduler')).saveSchedulerState(s),
-      setSchedule: async ({ enabled, hour, minute }: { enabled?: boolean; hour?: number; minute?: number } = {}) => {
-        const { loadCloudConfig, saveCloudConfig, redactConfig } = await import('@/lib/cloud');
+      getState: async () =>
+        (await import('@/lib/scheduler')).loadSchedulerState(),
+      setState: async (s: any) =>
+        (await import('@/lib/scheduler')).saveSchedulerState(s),
+      setSchedule: async ({
+        enabled,
+        hour,
+        minute,
+      }: { enabled?: boolean; hour?: number; minute?: number } = {}) => {
+        const { loadCloudConfig, saveCloudConfig, redactConfig } =
+          await import('@/lib/cloud');
         const cfg: any = await loadCloudConfig();
         cfg.schedule = { ...cfg.schedule, enabled: !!enabled, hour, minute };
         await saveCloudConfig(cfg);
@@ -111,36 +137,54 @@ export function installTestHooks() {
       // `now` is injectable for deterministic tests (production: real clock).
       runIfDue: (options: any = {}) => apiOperation('runIfDue', options),
     },
-    restoreFromText: (text: string, options: any = {}) => apiOperation('restoreFromText', text, options),
+    restoreFromText: (text: string, options: any = {}) =>
+      apiOperation('restoreFromText', text, options),
     // Seed helpers for the automated test suite (create test data through the
     // same public APIs a user interaction would use).
     seed: {
       createTab: (url: string, opts: any = {}) =>
-        (chrome.tabs.create as any)({ url, active: false, ...opts }).then((t: any) => ({
-          id: t.id,
-          windowId: t.windowId,
-          index: t.index,
-        })),
-      updateTab: (tabId: number, props: any) => chrome.tabs.update(tabId, props),
+        (chrome.tabs.create as any)({ url, active: false, ...opts }).then(
+          (t: any) => ({
+            id: t.id,
+            windowId: t.windowId,
+            index: t.index,
+          })
+        ),
+      updateTab: (tabId: number, props: any) =>
+        chrome.tabs.update(tabId, props),
       createWindow: (urls: string[] = [], opts: any = {}) =>
-        chrome.windows.create({ url: urls, focused: false, ...opts } as any).then((w2: any) => ({
-          id: w2.id,
-          state: w2.state,
-          bounds: { left: w2.left, top: w2.top, width: w2.width, height: w2.height },
-          tabs: (w2.tabs || []).map((t: any) => ({ id: t.id, index: t.index })),
-        })),
+        chrome.windows
+          .create({ url: urls, focused: false, ...opts } as any)
+          .then((w2: any) => ({
+            id: w2.id,
+            state: w2.state,
+            bounds: {
+              left: w2.left,
+              top: w2.top,
+              width: w2.width,
+              height: w2.height,
+            },
+            tabs: (w2.tabs || []).map((t: any) => ({
+              id: t.id,
+              index: t.index,
+            })),
+          })),
       groupTabs: async (tabIds: number[], meta: any = {}) => {
         const gid = await (chrome.tabs as any).group({ tabIds });
         if (meta.title || meta.color)
           await chrome.tabGroups.update(gid, {
             title: meta.title || '',
             ...(meta.color ? { color: meta.color } : {}),
-            ...(typeof meta.collapsed === 'boolean' ? { collapsed: meta.collapsed } : {}),
+            ...(typeof meta.collapsed === 'boolean'
+              ? { collapsed: meta.collapsed }
+              : {}),
           });
         return gid;
       },
-      addReadingListEntry: (entry: any) => chrome.readingList.addEntry(entry as any),
-      addDownload: (url: string, filename: string) => chrome.downloads.download({ url, filename, saveAs: false }),
+      addReadingListEntry: (entry: any) =>
+        chrome.readingList.addEntry(entry as any),
+      addDownload: (url: string, filename: string) =>
+        chrome.downloads.download({ url, filename, saveAs: false }),
       listTabs: async () => {
         const tabs: any[] = await chrome.tabs.query({});
         return tabs
@@ -175,16 +219,26 @@ export function installTestHooks() {
         });
         return chrome.scripting.executeScript({
           target: { tabId: tab.id!, allFrames: true },
-          func: (prefix: string, lsJson: string, idb: string, cache: string) => {
+          func: (
+            prefix: string,
+            lsJson: string,
+            idb: string,
+            cache: string
+          ) => {
             if (window.top === window) return { main: true };
-            if (!location.origin.startsWith(prefix)) return { skip: true, origin: location.origin };
+            if (!location.origin.startsWith(prefix))
+              return { skip: true, origin: location.origin };
             const ls: Record<string, string> = JSON.parse(lsJson);
             for (const [k, v] of Object.entries(ls)) localStorage.setItem(k, v);
-            const out = { origin: location.origin, lsKeys: Object.keys(ls).length };
+            const out = {
+              origin: location.origin,
+              lsKeys: Object.keys(ls).length,
+            };
             const idbDone = new Promise((res) => {
               const rq = indexedDB.open(idb, 1);
               rq.onupgradeneeded = () => {
-                if (!rq.result.objectStoreNames.contains('kv')) rq.result.createObjectStore('kv');
+                if (!rq.result.objectStoreNames.contains('kv'))
+                  rq.result.createObjectStore('kv');
               };
               rq.onsuccess = () => {
                 const db = rq.result;
@@ -204,18 +258,23 @@ export function installTestHooks() {
                 const c = await caches.open(cache);
                 await c.put(
                   '/part-asset',
-                  new Response('partitioned-cache-body', { status: 200, headers: { 'x-part': '1' } })
+                  new Response('partitioned-cache-body', {
+                    status: 200,
+                    headers: { 'x-part': '1' },
+                  })
                 );
                 return true;
               } catch (e) {
                 return String(e);
               }
             })();
-            return Promise.all([idbDone, cacheDone]).then(([idbOk, cacheOk]) => ({
-              ...out,
-              idb: idbOk,
-              cache: cacheOk,
-            }));
+            return Promise.all([idbDone, cacheDone]).then(
+              ([idbOk, cacheOk]) => ({
+                ...out,
+                idb: idbOk,
+                cache: cacheOk,
+              })
+            );
           },
           args: [framePrefix, JSON.stringify(lsEntries), idbName, cacheName],
         });
@@ -233,7 +292,10 @@ export function installTestHooks() {
           target: { tabId: tab.id!, allFrames: true },
           func: () => {
             if (window.top === window) return { main: true };
-            return (async () => ({ origin: location.origin, out: await (window as any).__BBR.wipeSiteAll() }))();
+            return (async () => ({
+              origin: location.origin,
+              out: await (window as any).__BBR.wipeSiteAll(),
+            }))();
           },
         });
       },
