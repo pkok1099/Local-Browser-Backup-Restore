@@ -1,6 +1,6 @@
 {
   "name": "local-browser-backup-extension",
-  "version": "1.4.4",
+  "version": "1.4.7",
   "description": "Backup & restore browser data locally or to GitHub, with encryption, daily or weekly scheduling, retry controls, and token-safe settings transfer. No server or telemetry.",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
     "screenshot": "npm run build && node scripts/screenshot.mjs",
     "compile": "tsc --noEmit",
     "prepare": "husky",
-    "test:node": "node tests/cloud-retry.mjs && node tests/schedule-settings.mjs && node tests/restore-tabs.mjs && node tests/restore-tabs-android.mjs && node tests/collect-selection.mjs && node tests/site-data-origins.mjs && node tests/pagelib-category-failures.mjs && node tests/cloud-provider-guard.mjs && node tests/no-raw-tab-remove.mjs && node tests/sitedata-tab-cleanup.mjs && node tests/runtime-tab-remove-guard.mjs && node tests/cloud-backup-characterization.mjs && node tests/probe-characterization.mjs && node tests/theme-mode.mjs && node tests/site-log.mjs && node tests/site-exclude.mjs && node tests/no-circular-import.mjs && node tests/verify-scan-failed.mjs",
+    "test:node": "node tests/lazy-route-retry.mjs && node tests/cloud-retry.mjs && node tests/schedule-settings.mjs && node tests/restore-tabs.mjs && node tests/restore-tabs-android.mjs && node tests/collect-selection.mjs && node tests/site-data-origins.mjs && node tests/pagelib-category-failures.mjs && node tests/cloud-provider-guard.mjs && node tests/no-raw-tab-remove.mjs && node tests/sitedata-tab-cleanup.mjs && node tests/runtime-tab-remove-guard.mjs && node tests/cloud-backup-characterization.mjs && node tests/probe-characterization.mjs && node tests/theme-mode.mjs && node tests/site-log.mjs && node tests/site-exclude.mjs && node tests/no-circular-import.mjs && node tests/verify-scan-failed.mjs",
     "test:ui": "node tests/extension-ui.mjs",
     "test:e2e": "node tests/e2e/local-roundtrip.mjs && node tests/e2e/cloud-roundtrip.mjs && node tests/e2e/scheduler-roundtrip.mjs && node tests/e2e/sitedata-tabs.mjs && node tests/e2e/theme-toggle.mjs",
     "test": "npm run test:node",
@@ -32,7 +32,7 @@
     "wxt": "^0.21.4"
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
+    "@eslint/js": "^9.39.5",
     "@radix-ui/react-checkbox": "^1.3.11",
     "@radix-ui/react-dialog": "^1.1.23",
     "@radix-ui/react-label": "^2.1.15",
@@ -47,7 +47,7 @@
     "@types/react-dom": "^19.3.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "eslint": "^10.11.0",
+    "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-import": "^2.32.0",
     "husky": "^9.1.7",

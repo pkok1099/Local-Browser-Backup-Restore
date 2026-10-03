@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { useApp } from '@/dashboard/store';
+import { useApp, type ResultLine } from '@/dashboard/store';
 import {
   handleFileSelected,
   toggleRestoreRow,
@@ -20,6 +20,47 @@ function RestoreBadge({ restore }: { restore: 'full' | 'partial' | false }) {
   if (restore === 'full') return <Badge variant="success">restorable</Badge>;
   if (restore === 'partial') return <Badge variant="warning">partial</Badge>;
   return <Badge variant="danger">cannot restore: API limitation</Badge>;
+}
+
+function OutcomeBadge({ line }: { line: ResultLine }) {
+  const labels: Record<ResultLine['outcome'], string> = {
+    complete: 'Complete',
+    partial: 'Partial',
+    failed: 'Failed',
+    unavailable: 'Unavailable',
+    skipped_by_user: 'Skipped by user',
+    not_in_backup: 'Absent from backup',
+  };
+  const variants: Record<ResultLine['outcome'], 'success' | 'warning' | 'danger' | 'outline' | 'secondary'> = {
+    complete: 'success',
+    partial: 'warning',
+    failed: 'danger',
+    unavailable: 'outline',
+    skipped_by_user: 'secondary',
+    not_in_backup: 'secondary',
+  };
+  const color =
+    line.outcome === 'complete'
+      ? 'text-emerald-700 dark:text-emerald-400'
+      : line.outcome === 'partial'
+        ? 'text-amber-700 dark:text-amber-400'
+        : line.outcome === 'failed'
+          ? 'text-destructive'
+          : 'text-muted-foreground';
+  const counts = line.outcomeCounts;
+  const countText =
+    line.outcome === 'partial' && counts ? ` (${counts.succeeded} succeeded, ${counts.failed} failed)` : '';
+  return (
+    <div className={`flex flex-wrap items-center gap-2 text-sm ${color}`}>
+      <span>
+        {line.label}: {line.summary}
+      </span>
+      <Badge variant={variants[line.outcome]}>
+        {labels[line.outcome]}
+        {countText}
+      </Badge>
+    </div>
+  );
 }
 
 export function RestoreCard() {
@@ -70,7 +111,10 @@ export function RestoreCard() {
               <TableBody>
                 {restore.summary.rows.map((row) => (
                   <TableRow key={row.cat} title={row.note}>
-                    <TableCell className="font-medium">{row.label}</TableCell>
+                    <TableCell className="font-medium">
+                      <div>{row.label}</div>
+                      {row.note && <div className="text-muted-foreground text-xs font-normal">{row.note}</div>}
+                    </TableCell>
                     <TableCell>{row.n}</TableCell>
                     <TableCell>
                       <RestoreBadge restore={row.restore} />
@@ -172,11 +216,7 @@ export function RestoreCard() {
             <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Restore results</h3>
             {restore.results.map((line) => (
               <div key={line.label} className="grid gap-0.5">
-                <div
-                  className={`text-sm ${line.cls === 'ok' ? 'text-emerald-700 dark:text-emerald-400' : line.cls === 'warn' ? 'text-amber-700 dark:text-amber-400' : 'text-destructive'}`}
-                >
-                  {line.label}: {line.summary}
-                </div>
+                <OutcomeBadge line={line} />
                 {line.notes.map((n) => (
                   <div key={n} className="text-muted-foreground pl-4 text-xs">
                     • {n}

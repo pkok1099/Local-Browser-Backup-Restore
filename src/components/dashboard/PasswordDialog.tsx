@@ -11,7 +11,6 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useApp } from '@/dashboard/store';
-import { submitPassword, closePassword } from '@/dashboard/logic';
 import { useEffect, useState } from 'react';
 
 export function PasswordDialog() {
@@ -32,7 +31,7 @@ export function PasswordDialog() {
     <Dialog
       open={password.open}
       onOpenChange={(open) => {
-        if (!open) closePassword(null);
+        if (!open) void import('@/dashboard/logic').then(({ closePassword }) => closePassword(null));
       }}
     >
       <DialogContent id="section-password" showCloseButton={false}>
@@ -76,10 +75,17 @@ export function PasswordDialog() {
           </div>
         </div>
         <DialogFooter>
-          <Button id="pw-ok" onClick={() => submitPassword(pw1, pw2)}>
+          <Button
+            id="pw-ok"
+            onClick={() => void import('@/dashboard/logic').then(({ submitPassword }) => submitPassword(pw1, pw2))}
+          >
             Continue
           </Button>
-          <Button id="pw-cancel" variant="outline" onClick={() => closePassword(null)}>
+          <Button
+            id="pw-cancel"
+            variant="outline"
+            onClick={() => void import('@/dashboard/logic').then(({ closePassword }) => closePassword(null))}
+          >
             Cancel
           </Button>
         </DialogFooter>

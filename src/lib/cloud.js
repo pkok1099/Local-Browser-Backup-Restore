@@ -576,7 +576,12 @@ async function collectAndBuildRemoteArtifact({ collectBackup, collectOptions, lo
   const backup = await collectBackup((message) => log(message), collectOptions);
   await setCloudPhase('encrypting', encRequired ? 'Encrypting backup…' : 'Serializing backup…');
   const payload = encRequired ? await encryptBackup(backup, password) : backup;
-  return makeRemoteArtifact(JSON.stringify(payload), { trigger, browser: backup.generator || null });
+  const text = JSON.stringify(payload);
+  const validation = await validateBackupFile(text, { password: encRequired ? password : undefined });
+  if (encRequired && validation.backup.integrity?.digest !== backup.integrity?.digest) {
+    throw new TypedError('ERR_CHECKSUM_MISMATCH', 'Encrypted backup validation did not recover the finalized backup.');
+  }
+  return makeRemoteArtifact(text, { trigger, browser: backup.generator || null });
 }
 
 async function storeDurableLocalCopy(

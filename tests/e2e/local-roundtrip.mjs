@@ -25,6 +25,11 @@ try {
     await apiCall(page, `api.runBackupToFile({ encrypt: true, password: a.password, collectOptions: a.collectOptions })`, { password: PASSWORD, collectOptions }),
     'runBackupToFile'
   );
+  assert.deepEqual(
+    await page.evaluate(() => chrome.storage.local.get('bbr:last-backup')),
+    {},
+    'encrypted backup should not leave a raw backup cache in extension storage'
+  );
   const downloadPromise = page.waitForEvent('download');
   must(await apiCall(page, `api.downloadBackupFile()`, {}), 'downloadBackupFile');
   const download = await downloadPromise;
