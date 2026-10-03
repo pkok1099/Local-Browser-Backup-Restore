@@ -22,7 +22,16 @@ import { CLOUD_RETRY_MAX_ATTEMPTS } from '@/lib/scheduler';
 import { GitHubStorageProvider } from '@/lib/github';
 import { LocalStorageProvider } from '@/lib/providers';
 import { buildSettingsExport, parseSettingsImport } from '@/lib/settings';
-import { patchState, setState, updateForm, appendLog, getState, type CloudForm, type RemoteRef } from './store';
+import {
+  patchState,
+  setState,
+  updateForm,
+  appendLog,
+  getState,
+  withDashboardActivity,
+  type CloudForm,
+  type RemoteRef,
+} from './store';
 import {
   buildCloudBackupObject,
   saveTextFile,
@@ -199,7 +208,11 @@ export async function onCloudConnect() {
 
 // ---------------- manual cloud backup ----------------
 
-export async function onCloudBackupNow(trigger = 'manual', destination: 'both' | 'cloud-only' = 'both') {
+export function onCloudBackupNow(trigger = 'manual', destination: 'both' | 'cloud-only' = 'both') {
+  return withDashboardActivity('cloud-backup', () => onCloudBackupNowUnlocked(trigger, destination));
+}
+
+async function onCloudBackupNowUnlocked(trigger = 'manual', destination: 'both' | 'cloud-only' = 'both') {
   patchState('cloud', (c) => ({ ...c, progress: { visible: true, frac: 0.05 } }));
   const cfg = cloudConfigFromForm();
   await saveCloudConfig(cfg);
@@ -300,7 +313,11 @@ export async function onCloudRestore() {
   }
 }
 
-export async function onCloudRestorePick(id: string) {
+export function onCloudRestorePick(id: string) {
+  return withDashboardActivity('restore', () => onCloudRestorePickUnlocked(id));
+}
+
+async function onCloudRestorePickUnlocked(id: string) {
   try {
     const refs = await listCloudBackups();
     const ref = refs.find((r: any) => r.id === id);
@@ -345,7 +362,11 @@ export async function onCloudDeletePick(id: string) {
 
 // ---------------- scheduled / retry runs ----------------
 
-async function runScheduledCloudBackup(reason: string) {
+function runScheduledCloudBackup(reason: string) {
+  return withDashboardActivity('cloud-backup', () => runScheduledCloudBackupUnlocked(reason));
+}
+
+async function runScheduledCloudBackupUnlocked(reason: string) {
   patchState('cloud', (c) => ({ ...c, progress: { visible: true, frac: 0.05 } }));
   appendLog(`scheduled cloud backup starting (${reason})`);
   patchState('cloud', (c) => ({ ...c, status: 'Backing up (scheduled)…' }));
@@ -380,7 +401,11 @@ async function runScheduledCloudBackup(reason: string) {
   await refreshCloudUI();
 }
 
-async function runAutomaticCloudRetry() {
+function runAutomaticCloudRetry() {
+  return withDashboardActivity('cloud-backup', runAutomaticCloudRetryUnlocked);
+}
+
+async function runAutomaticCloudRetryUnlocked() {
   patchState('cloud', (c) => ({
     ...c,
     progress: { visible: true, frac: 0.05 },
@@ -419,7 +444,11 @@ async function runAutomaticCloudRetry() {
   await refreshCloudUI();
 }
 
-export async function onRetrySync() {
+export function onRetrySync() {
+  return withDashboardActivity('cloud-backup', onRetrySyncUnlocked);
+}
+
+async function onRetrySyncUnlocked() {
   patchState('cloud', (c) => ({ ...c, progress: { visible: true, frac: 0.05 }, status: 'Syncing pending upload…' }));
   try {
     const cfg = await loadCloudConfig();

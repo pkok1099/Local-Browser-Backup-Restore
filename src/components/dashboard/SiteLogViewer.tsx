@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { useApp } from '@/dashboard/store';
 import {
   useSiteLog,
   loadPersistedSiteLog,
@@ -37,6 +38,7 @@ function exportText(entries: SiteLogEntry[]) {
 
 export function SiteLogViewer() {
   const entries = useSiteLog();
+  const { activeOperations } = useApp();
   const [levels, setLevels] = useState<string[]>(['INFO', 'WARN', 'ERROR', 'FATAL']); // DEBUG hidden by default
   const [categories, setCategories] = useState<string[]>([]);
   const [query, setQuery] = useState('');
@@ -44,15 +46,23 @@ export function SiteLogViewer() {
   const [detailed, setDetailed] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const [clearError, setClearError] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const wasAtBottomRef = useRef(true);
 
   useEffect(() => {
     void loadPersistedSiteLog();
   }, []);
 
   useEffect(() => {
-    if (autoScroll) bottomRef.current?.scrollIntoView({ block: 'end' });
+    const panel = panelRef.current;
+    if (autoScroll && panel && wasAtBottomRef.current) panel.scrollTop = panel.scrollHeight;
   }, [entries, autoScroll]);
+
+  const updatePanelPosition = () => {
+    const panel = panelRef.current;
+    if (panel) wasAtBottomRef.current = panel.scrollHeight - panel.scrollTop - panel.clientHeight <= 1;
+  };
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -141,9 +151,28 @@ export function SiteLogViewer() {
         <Button size="sm" variant="outline" onClick={() => setAutoScroll((a) => !a)}>
           {autoScroll ? 'Jeda auto-scroll' : 'Lanjut auto-scroll'}
         </Button>
-        <Button size="sm" variant="outline" onClick={() => clearSiteLogView()}>
-          Bersihkan tampilan
+        <Button
+          id="clear-logs"
+          size="sm"
+          variant="outline"
+          disabled={
+            activeOperations > 0 ||
+            typeof navigator === 'undefined' ||
+            typeof navigator.locks?.request !== 'function' ||
+            typeof navigator.locks?.query !== 'function'
+          }
+          onClick={async () => {
+            setClearError(false);
+            if (!(await clearSiteLogView())) setClearError(true);
+          }}
+        >
+          Clear Logs
         </Button>
+        {clearError && (
+          <p role="alert" className="basis-full text-destructive text-xs">
+            Clear Logs failed. Logs were not changed.
+          </p>
+        )}
         <Button size="sm" variant="outline" onClick={() => exportJson(filtered)}>
           Ekspor JSON
         </Button>
@@ -151,13 +180,22 @@ export function SiteLogViewer() {
           Ekspor teks
         </Button>
         <span className="text-muted-foreground ml-auto">{filtered.length} entri</span>
+        <p className="basis-full text-muted-foreground text-xs">
+          Clear Logs removes dashboard and crawl logs only. It does not remove results, backups, artifacts, scan state,
+          or browser data.
+        </p>
       </div>
 
       {/* Entries */}
-      <div className="grid max-h-[60vh] gap-1 overflow-y-auto rounded-md border p-2 font-mono text-[11px]">
-        {filtered.map((e, i) => (
+      <div
+        id="site-log-panel"
+        ref={panelRef}
+        onScroll={updatePanelPosition}
+        className="grid max-h-[60vh] gap-1 overflow-y-auto rounded-md border p-2 font-mono text-[11px]"
+      >
+        {filtered.map((e) => (
           <div
-            key={`${e.crawlId}:${e.seq}:${i}`}
+            key={e.id}
             className={`flex flex-wrap gap-x-2 gap-y-0.5 rounded px-1.5 py-0.5 ${e.level === 'FATAL' ? 'bg-red-600 text-white' : ''}`}
           >
             <span className="text-muted-foreground shrink-0">{formatLogTs(e.ts)}</span>
@@ -187,7 +225,6 @@ export function SiteLogViewer() {
         {filtered.length === 0 && (
           <p className="text-muted-foreground p-2 font-sans text-sm">Tidak ada entri yang cocok dengan filter.</p>
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   );

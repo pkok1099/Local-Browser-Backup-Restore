@@ -1,6 +1,6 @@
 {
   "name": "local-browser-backup-extension",
-  "version": "1.4.6",
+  "version": "1.4.7",
   "description": "Backup & restore browser data locally or to GitHub, with encryption, daily or weekly scheduling, retry controls, and token-safe settings transfer. No server or telemetry.",
   "private": true,
   "type": "module",

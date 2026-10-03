@@ -346,19 +346,17 @@ async function collectReadingList() {
 
 // ---------- extension storage (this extension's own) ----------
 
+const EXTENSION_STORAGE_ALLOWLIST = [
+  'bbr.dashboard.theme',
+  'bbr:backup-categories',
+  'bbr:site-data-scan-window',
+  'bbr:site-data-tuning',
+  'bbr:site-data-include',
+];
+
 async function collectExtensionStorage() {
-  const local = await chrome.storage.local.get(null);
-  let sync = {};
-  let syncNote;
-  try {
-    sync = await chrome.storage.sync.get(null);
-  } catch (e) {
-    syncNote = 'storage.sync unavailable: ' + (e.message || 'unknown');
-  }
-  const out = { local };
-  if (Object.keys(sync).length) out.sync = sync;
-  if (syncNote) out.syncNote = syncNote;
-  return out;
+  const local = await chrome.storage.local.get(EXTENSION_STORAGE_ALLOWLIST);
+  return { local };
 }
 
 // ---------- installed extensions (metadata only) ----------
@@ -466,7 +464,10 @@ export function computeCounts(data) {
   if (data.installedExtensions) c.installedExtensions = data.installedExtensions.items.length;
   if (data.extensionPermissions)
     c.extensionPermissions = data.extensionPermissions.permissions.length + data.extensionPermissions.origins.length;
-  if (data.extensionStorage) c.extensionStorage = Object.keys(data.extensionStorage).length;
+  if (data.extensionStorage) {
+    const local = data.extensionStorage.local;
+    c.extensionStorage = local && typeof local === 'object' && !Array.isArray(local) ? Object.keys(local).length : 0;
+  }
   if (data.profile) c.profile = 1;
   Object.assign(c, computeSiteDataCounts(data.siteData));
   return c;

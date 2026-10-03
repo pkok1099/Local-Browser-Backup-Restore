@@ -1126,6 +1126,8 @@ async function restorePartitions(partitions, mode, _progress) {
         });
         for (const r of results) {
           if (r.result && r.result.frameOrigin) stats.restored++;
+          else if (r.result && r.result.error)
+            stats.notes.push(`partition restore into ${topSite} failed: ${r.result.error}`);
         }
       } catch (e) {
         stats.notes.push(`partition restore into ${topSite}} failed: ${e.message}`);
