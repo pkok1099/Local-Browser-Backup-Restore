@@ -48,10 +48,13 @@ jobs:
       - run: npm run zip
 
       - name: Pack CRX (signed)
-        if: ${{ secrets.CRX_PRIVATE_KEY != '' }}
         env:
           CRX_PRIVATE_KEY: ${{ secrets.CRX_PRIVATE_KEY }}
         run: |
+          if [ -z "$CRX_PRIVATE_KEY" ]; then
+            echo "CRX_PRIVATE_KEY not set — skipping CRX pack (zip-only release)."
+            exit 0
+          fi
           set -euo pipefail
           npm install --no-save --no-audit --no-fund crx3@2.0.0
           printf '%s' "$CRX_PRIVATE_KEY" > /tmp/crx-key.pem
