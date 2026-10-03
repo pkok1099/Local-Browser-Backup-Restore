@@ -15,6 +15,14 @@ export const SITE_DATA_CONFIG = {
   tabLoadTimeoutMs: 20000,
   checkpointKey: 'bbr:site-data-checkpoint',
   checkpointEveryOrigins: 10,
+  // Incremental site-data (history-gated): the key holding the last complete
+  // snapshot, its schema version (bumped when the payload shape changes), how
+  // long a snapshot stays eligible for incremental reuse before a forced full
+  // crawl, and the history query page size (hitting it forces a full crawl).
+  siteDataCacheKey: 'bbr:site-data-cache',
+  siteDataCacheVersion: 1,
+  incrementalFullIntervalMs: 7 * 24 * 3600 * 1000,
+  historyMaxResults: 50000,
   // URLs never crawled: not opened, no debugger attach, no data captured.
   // Matched on the parsed hostname (new URL()), never on URL substrings, so
   // https://contoh.com/?q=localhost is NOT blocked. Applies to http/https on

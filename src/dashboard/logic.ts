@@ -37,7 +37,14 @@ import {
   loadSiteDataTuning,
   loadSiteDataInclude,
 } from './backup-categories';
-import { collectSiteData } from '@/lib/sitedata';
+import { collectSiteData, discoverOrigins } from '@/lib/sitedata';
+import {
+  computeIncrementalPlan,
+  finalizeIncrementalRun,
+  buildFullCachePayload,
+  writeSiteDataCache,
+} from '@/lib/site-incremental';
+import { SITE_DATA_CONFIG } from '@/lib/scan-config';
 import { pushSiteLogEntry, type SiteLogEntry } from './site-log-store';
 
 type UnknownRecord = Record<string, unknown>;
@@ -62,6 +69,7 @@ type BackupObject = UnknownRecord & {
 };
 type SiteDataOptions = UnknownRecord & {
   includeOrigins?: string[] | null;
+  excludeOrigins?: string[] | null;
   scanWindowSize?: number | null;
   retryMaxAttempts?: number | undefined;
   readTimeoutMs?: number | undefined;
@@ -75,6 +83,10 @@ type SiteDataOptions = UnknownRecord & {
 type CollectOptions = UnknownRecord & {
   selectedCategories?: string[];
   siteData?: SiteDataOptions;
+  // Scheduled runs only: re-crawl just origins visited since the last
+  // snapshot (history-gated); the section is merged back to complete.
+  // Manual runs never set this (always a full crawl).
+  incrementalSiteData?: boolean;
 };
 type CategoryStatus = {
   ok: boolean;
@@ -239,6 +251,60 @@ export async function buildBackupObject(
     },
   };
   lastSiteDataOpts = effectiveCollectOptions;
+  // Incremental site-data (scheduled runs only): narrow the crawl to origins
+  // visited since the last snapshot. The section is merged back to a complete
+  // snapshot after collection, so the artifact format never changes.
+  let incrementalCtx: {
+    included: string[];
+    plan: {
+      crawlOrigins: string[];
+      eligibleOrigins: string[];
+      cache: UnknownRecord | null;
+      fullCrawl: boolean;
+      reason: string | null;
+    };
+  } | null = null;
+  if (
+    collectOptions?.incrementalSiteData === true &&
+    selectedCategories.includes('siteData')
+  ) {
+    const rawList =
+      includedOrigins ??
+      (await discoverOrigins()).origins.map((o: unknown) =>
+        typeof o === 'string' ? o : (o as { origin: string }).origin
+      );
+    // Last-resort guard: the planner is internally fail-safe, but an
+    // unattended scheduled run must never die here — degrade to a full crawl.
+    let plan;
+    try {
+      plan = await computeIncrementalPlan({
+        storage: chrome.storage?.local ?? null,
+        history: chrome.history ?? null,
+        nowMs: Date.now(),
+        included: rawList,
+        excludeOrigins: effectiveCollectOptions.siteData.excludeOrigins,
+        config: SITE_DATA_CONFIG,
+      });
+    } catch (e) {
+      appendLog(
+        `sitedata incremental plan failed (${errMessage(e)}) — falling back to full crawl`
+      );
+      plan = {
+        crawlOrigins: rawList,
+        eligibleOrigins: rawList,
+        cache: null,
+        fullCrawl: true,
+        reason: 'plan-error',
+      };
+    }
+    incrementalCtx = { included: plan.eligibleOrigins, plan };
+    // Mutates the same object lastSiteDataOpts already references.
+    effectiveCollectOptions.siteData.includeOrigins = plan.crawlOrigins;
+    appendLog(
+      `sitedata incremental plan: ${plan.crawlOrigins.length}/${plan.eligibleOrigins.length} origin(s) to crawl` +
+        (plan.fullCrawl ? ` (full crawl: ${plan.reason})` : '')
+    );
+  }
   patchState('backup', (b) => ({ ...b, siteScan: null }));
   appendLog(`backup starting: categories=[${selectedCategories.join(', ')}]`);
   const result = (await collectAll(
@@ -268,6 +334,52 @@ export async function buildBackupObject(
     effectiveCollectOptions
   )) as unknown as CollectionResult;
   const { data, capabilities, categoryStatus } = result;
+  // Incremental finalize: merge the crawled subset back into a complete
+  // snapshot and advance the cache — but only on a clean, successful run.
+  // A stopped/failed run never advances the cache (stale data must not look
+  // fresh). A manual full run refreshes the cache wholesale instead, so the
+  // next scheduled run starts incremental from a fresh snapshot.
+  const siteDataSection = data.siteData as SiteDataSection | undefined;
+  const siteDataWanted = selectedCategories.includes('siteData');
+  if (
+    categoryStatus.siteData?.ok === true &&
+    siteDataWanted &&
+    siteDataSection
+  ) {
+    const stopped =
+      siteDataSection.stopped === true || backupStopFlag?.stop === true;
+    const storage = chrome.storage?.local ?? null;
+    if (incrementalCtx) {
+      const fin = finalizeIncrementalRun({
+        cache: incrementalCtx.plan.cache,
+        freshOrigins: siteDataSection.origins ?? {},
+        included: incrementalCtx.included,
+        stopped,
+        categoryOk: true,
+        fullCrawl: incrementalCtx.plan.fullCrawl,
+        fullReason: incrementalCtx.plan.reason,
+        nowMs: Date.now(),
+      });
+      siteDataSection.origins = fin.origins as Record<string, unknown>;
+      // notes is always an array from collectSiteData (success and halted paths).
+      (siteDataSection.notes as string[]).push(...fin.notes);
+      appendLog(fin.notes.join(' | '));
+      if (fin.cachePayload) {
+        const written = await writeSiteDataCache(storage, fin.cachePayload);
+        if (!written)
+          appendLog(
+            'sitedata: cache write failed (best-effort) — next run re-crawls'
+          );
+      }
+    } else if (!stopped) {
+      const payload = buildFullCachePayload({
+        freshOrigins: siteDataSection.origins ?? {},
+        included: includedOrigins,
+        nowMs: Date.now(),
+      });
+      await writeSiteDataCache(storage, payload); // best-effort; never fails the backup
+    }
+  }
   // Only categories that were actually & successfully read go into the backup.
   const clean: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(data)) {

@@ -450,6 +450,9 @@ async function runScheduledCloudBackupUnlocked(reason: string) {
       collectBackup: buildCloudBackupObject,
       onProgress: (m: string) =>
         patchState('cloud', (c) => ({ ...c, detail: m })),
+      // Scheduled runs use history-gated incremental site-data: only origins
+      // visited since the last snapshot are re-crawled (site-incremental.js).
+      collectOptions: { incrementalSiteData: true },
       password: null,
       useSessionPassword: true,
       plaintextAck: cfg.encryption === 'disabled', // choice recorded at configuration time
