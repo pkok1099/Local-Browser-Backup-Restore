@@ -12,9 +12,9 @@
     "screenshot": "npm run build && node scripts/screenshot.mjs",
     "compile": "tsc --noEmit",
     "prepare": "husky",
-    "test:node": "node tests/lazy-route-retry.mjs && node tests/cloud-retry.mjs && node tests/schedule-settings.mjs && node tests/restore-tabs.mjs && node tests/restore-tabs-android.mjs && node tests/collect-selection.mjs && node tests/site-data-origins.mjs && node tests/pagelib-category-failures.mjs && node tests/cloud-provider-guard.mjs && node tests/no-raw-tab-remove.mjs && node tests/sitedata-tab-cleanup.mjs && node tests/runtime-tab-remove-guard.mjs && node tests/cloud-backup-characterization.mjs && node tests/probe-characterization.mjs && node tests/theme-mode.mjs && node tests/site-log.mjs && node tests/site-exclude.mjs && node tests/no-circular-import.mjs && node tests/verify-scan-failed.mjs",
+    "test:node": "node tests/lazy-route-retry.mjs && node tests/cloud-retry.mjs && node tests/schedule-settings.mjs && node tests/restore-tabs.mjs && node tests/restore-tabs-android.mjs && node tests/collect-selection.mjs && node tests/site-data-origins.mjs && node tests/pagelib-category-failures.mjs && node tests/cloud-provider-guard.mjs && node tests/no-raw-tab-remove.mjs && node tests/sitedata-tab-cleanup.mjs && node tests/runtime-tab-remove-guard.mjs && node tests/cloud-backup-characterization.mjs && node tests/probe-characterization.mjs && node tests/theme-mode.mjs && node tests/site-log.mjs && node tests/site-exclude.mjs && node tests/no-circular-import.mjs && node tests/verify-scan-failed.mjs && node tests/crypto-kdf-guard.mjs && node tests/cloud-retention-warning.mjs && node tests/cloud-scheduler-lock.mjs && node tests/cloud-session-password.mjs",
     "test:ui": "node tests/extension-ui.mjs",
-    "test:e2e": "node tests/e2e/local-roundtrip.mjs && node tests/e2e/cloud-roundtrip.mjs && node tests/e2e/scheduler-roundtrip.mjs && node tests/e2e/sitedata-tabs.mjs && node tests/e2e/theme-toggle.mjs",
+    "test:e2e": "node tests/e2e/local-roundtrip.mjs && node tests/e2e/cloud-roundtrip.mjs && node tests/e2e/scheduler-roundtrip.mjs && node tests/e2e/sitedata-tabs.mjs && node tests/e2e/sitedata-error-tabs.mjs && node tests/e2e/theme-toggle.mjs",
     "test": "npm run test:node",
     "lint": "eslint src/ --max-warnings=0",
     "lint:fix": "eslint src/ --fix",
@@ -24,6 +24,13 @@
     "check": "npm run lint && npm run typecheck && npm run format:check",
     "cycles": "madge --circular --extensions js,jsx,ts,tsx --ts-config tsconfig.madge.json src",
     "knip": "knip"
+  },
+  "prettier": {
+    "printWidth": 80,
+    "semi": true,
+    "singleQuote": true,
+    "tabWidth": 2,
+    "trailingComma": "es5"
   },
   "dependencies": {
     "@wxt-dev/module-react": "^1.2.2",

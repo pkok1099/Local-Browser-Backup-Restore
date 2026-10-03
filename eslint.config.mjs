@@ -202,12 +202,13 @@ export default tseslint.config(
     },
   },
 
-  // Override: sitedata.js contains the ONLY allowed chrome.tabs.remove calls,
-  // both inside safeCloseTab and marked SAFETY-ALLOWED. The precise enforcement
-  // is tests/no-raw-tab-remove.mjs (checks the marker); ESLint's AST selector
-  // cannot distinguish, so we disable the syntax rule here and rely on the test.
+  // Override: tab-ownership.js contains the ONLY allowed chrome.tabs.remove
+  // call, inside safeCloseTab and marked SAFETY-ALLOWED. The precise
+  // enforcement is tests/no-raw-tab-remove.mjs (checks the marker);
+  // ESLint's AST selector cannot distinguish, so we disable the syntax rule
+  // here and rely on the test.
   {
-    files: ['src/lib/sitedata.js'],
+    files: ['src/lib/tab-ownership.js'],
     rules: {
       'no-restricted-syntax': 'off',
     },

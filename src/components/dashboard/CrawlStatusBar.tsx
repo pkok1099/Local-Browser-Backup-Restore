@@ -34,7 +34,8 @@ export function CrawlStatusBar() {
     );
   }
 
-  const crawlState = (scan as any).crawlState || (scan.aborted > 0 ? 'fatal' : 'running');
+  const crawlState =
+    (scan as any).crawlState || (scan.aborted > 0 ? 'fatal' : 'running');
   const worker1 = (scan as any).worker1 || '—';
   const worker2 = (scan as any).worker2 || '—';
   const logCounts = (scan as any).logCounts || {};
@@ -45,7 +46,8 @@ export function CrawlStatusBar() {
 
   // Per-stage URL counts from urlStates.
   const stageCounts: Record<string, number> = {};
-  for (const u of scan.urlStates || []) stageCounts[u.status] = (stageCounts[u.status] || 0) + 1;
+  for (const u of scan.urlStates || [])
+    stageCounts[u.status] = (stageCounts[u.status] || 0) + 1;
 
   return (
     <div className="grid gap-2 rounded-md border px-3 py-2.5 text-xs">
@@ -66,12 +68,16 @@ export function CrawlStatusBar() {
           <b className="text-foreground">
             {scan.slotsUsed}/{scan.slotsTotal}
           </b>{' '}
-          · antrean: <b className="text-foreground">{(scan as any).queue ?? 0}</b> · window:{' '}
-          <b className="text-foreground">{scan.window}</b>
+          · antrean:{' '}
+          <b className="text-foreground">{(scan as any).queue ?? 0}</b> ·
+          window: <b className="text-foreground">{scan.window}</b>
           {typeof (scan as any).cpuPct === 'number' && (
             <>
               {' '}
-              · cpu: <b className="text-foreground">{Math.round((scan as any).cpuPct)}%</b>
+              · cpu:{' '}
+              <b className="text-foreground">
+                {Math.round((scan as any).cpuPct)}%
+              </b>
             </>
           )}
         </span>
