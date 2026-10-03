@@ -10,7 +10,8 @@ export type ResolvedTheme = 'light' | 'dark';
 const STORAGE_KEY = 'bbr.dashboard.theme';
 const LS_MIRROR_KEY = 'bbr.dashboard.theme.mirror';
 
-const isTheme = (v: unknown): v is Theme => v === 'light' || v === 'dark' || v === 'system';
+const isTheme = (v: unknown): v is Theme =>
+  v === 'light' || v === 'dark' || v === 'system';
 
 let current: Theme = 'system';
 const listeners = new Set<() => void>();
@@ -99,7 +100,8 @@ export async function setTheme(t: Theme): Promise<void> {
 
 /** Re-apply when the OS theme changes while in 'system' mode. */
 export function watchSystemTheme(): void {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function')
+    return;
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
   const onChange = () => {
     if (current === 'system') {
@@ -107,8 +109,12 @@ export function watchSystemTheme(): void {
       emit();
     }
   };
-  if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onChange);
-  else (mq as unknown as { addListener: (l: () => void) => void }).addListener(onChange);
+  if (typeof mq.addEventListener === 'function')
+    mq.addEventListener('change', onChange);
+  else
+    (mq as unknown as { addListener: (l: () => void) => void }).addListener(
+      onChange
+    );
 }
 
 /** React bindings. */

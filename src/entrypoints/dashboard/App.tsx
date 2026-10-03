@@ -1,21 +1,57 @@
-import { Component, lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
+import {
+  Component,
+  lazy,
+  Suspense,
+  useEffect,
+  useState,
+  type ReactNode,
+} from 'react';
 import { appendLog, setState, useApp } from '@/dashboard/store';
 import { loadRouteChunk, retryRouteChunk } from '@/dashboard/lazy-route';
-import { loadTheme, useResolvedTheme, watchSystemTheme } from '@/dashboard/theme';
+import {
+  loadTheme,
+  useResolvedTheme,
+  watchSystemTheme,
+} from '@/dashboard/theme';
 import { Header } from '@/components/dashboard/Header';
 import { SummaryPage } from '@/components/dashboard/pages';
 
-const Toaster = lazy(() => import('@/components/ui/sonner').then((module) => ({ default: module.Toaster })));
-const PasswordDialog = lazy(() =>
-  import('@/components/dashboard/PasswordDialog').then((module) => ({ default: module.PasswordDialog }))
+const Toaster = lazy(() =>
+  import('@/components/ui/sonner').then((module) => ({
+    default: module.Toaster,
+  }))
 );
-const SettingsPage = lazy(() => loadRouteChunk('pengaturan', () => import('@/components/dashboard/SettingsPage')));
-const ResultsPage = lazy(() => loadRouteChunk('hasil', () => import('@/components/dashboard/ResultsPage')));
-const FailuresPage = lazy(() => loadRouteChunk('kegagalan', () => import('@/components/dashboard/FailuresPage')));
-const LogPage = lazy(() => loadRouteChunk('log', () => import('@/components/dashboard/LogPage')));
-const MorePage = lazy(() => loadRouteChunk('lainnya', () => import('@/components/dashboard/MorePage')));
+const PasswordDialog = lazy(() =>
+  import('@/components/dashboard/PasswordDialog').then((module) => ({
+    default: module.PasswordDialog,
+  }))
+);
+const SettingsPage = lazy(() =>
+  loadRouteChunk(
+    'pengaturan',
+    () => import('@/components/dashboard/SettingsPage')
+  )
+);
+const ResultsPage = lazy(() =>
+  loadRouteChunk('hasil', () => import('@/components/dashboard/ResultsPage'))
+);
+const FailuresPage = lazy(() =>
+  loadRouteChunk(
+    'kegagalan',
+    () => import('@/components/dashboard/FailuresPage')
+  )
+);
+const LogPage = lazy(() =>
+  loadRouteChunk('log', () => import('@/components/dashboard/LogPage'))
+);
+const MorePage = lazy(() =>
+  loadRouteChunk('lainnya', () => import('@/components/dashboard/MorePage'))
+);
 
-class RouteChunkErrorBoundary extends Component<{ route: string; children: ReactNode }, { failed: boolean }> {
+class RouteChunkErrorBoundary extends Component<
+  { route: string; children: ReactNode },
+  { failed: boolean }
+> {
   override state = { failed: false };
 
   static getDerivedStateFromError() {
@@ -25,8 +61,14 @@ class RouteChunkErrorBoundary extends Component<{ route: string; children: React
   override render() {
     if (this.state.failed) {
       return (
-        <div role="alert" className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
-          <p>Halaman gagal dimuat. Dashboard sudah mencoba memuat ulang satu kali.</p>
+        <div
+          role="alert"
+          className="rounded-lg border bg-card p-4 text-sm text-muted-foreground"
+        >
+          <p>
+            Halaman gagal dimuat. Dashboard sudah mencoba memuat ulang satu
+            kali.
+          </p>
           <button
             type="button"
             className="mt-3 min-h-11 rounded-md bg-primary px-4 py-2 font-medium text-primary-foreground"
@@ -56,7 +98,8 @@ const NAV = [
 ] as const;
 
 function useHashRoute(): string {
-  const read = () => (window.location.hash || '').replace(/^#\/?/, '') || 'ringkasan';
+  const read = () =>
+    (window.location.hash || '').replace(/^#\/?/, '') || 'ringkasan';
   const [route, setRoute] = useState(read);
   useEffect(() => {
     const onHash = () => setRoute(read());
@@ -70,7 +113,9 @@ export default function App() {
   const state = useApp();
   const resolvedTheme = useResolvedTheme();
   const route = useHashRoute();
-  const [toasterReady, setToasterReady] = useState(() => new URLSearchParams(location.search).has('action'));
+  const [toasterReady, setToasterReady] = useState(() =>
+    new URLSearchParams(location.search).has('action')
+  );
 
   useEffect(() => {
     const match = navigator.userAgent.match(/Chrom(?:e|ium)\/(\d+(\.\d+)+)/);
@@ -91,13 +136,17 @@ export default function App() {
   }, [route, state.backup.running]);
 
   const failCount =
-    state.backup.siteScan?.urlStates.filter((u) => u.status === 'fetch-failed' || u.status === 'save-failed').length ??
-    0;
+    state.backup.siteScan?.urlStates.filter(
+      (u) => u.status === 'fetch-failed' || u.status === 'save-failed'
+    ).length ?? 0;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Header subline={state.subline} />
-      <nav aria-label="Halaman dashboard" className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
+      <nav
+        aria-label="Halaman dashboard"
+        className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur"
+      >
         <div className="mx-auto flex w-full max-w-[880px] gap-1 overflow-x-auto px-4 py-2 max-sm:px-2.5">
           {NAV.map((p) => (
             <a
@@ -112,7 +161,9 @@ export default function App() {
             >
               {p.label}
               {p.id === 'kegagalan' && failCount > 0 && (
-                <span className="rounded-full bg-red-600 px-1.5 text-[11px] font-bold text-white">{failCount}</span>
+                <span className="rounded-full bg-red-600 px-1.5 text-[11px] font-bold text-white">
+                  {failCount}
+                </span>
               )}
             </a>
           ))}

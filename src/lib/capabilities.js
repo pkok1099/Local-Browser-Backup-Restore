@@ -9,7 +9,10 @@
 
 import { runCapabilityProbes } from './capability-probes.js';
 
-const has = (ns) => typeof chrome !== 'undefined' && chrome[ns] !== undefined && chrome[ns] !== null;
+const has = (ns) =>
+  typeof chrome !== 'undefined' &&
+  chrome[ns] !== undefined &&
+  chrome[ns] !== null;
 
 export function getChromeVersion() {
   const m = navigator.userAgent.match(/Chrom(?:e|ium)\/(\d+(\.\d+)+)/);
@@ -213,7 +216,9 @@ export function detect() {
     canRead: false,
     canBackup: false,
     canRestore: false,
-    notes: ['Passwords, autofill, payment methods: no public API and explicitly out of scope for security reasons.'],
+    notes: [
+      'Passwords, autofill, payment methods: no public API and explicitly out of scope for security reasons.',
+    ],
   };
 
   caps.favicons = {
@@ -231,7 +236,9 @@ export function detect() {
     canRead: has('topSites'),
     canBackup: false,
     canRestore: false,
-    notes: ['Derived ranking from history; covered by the history backup. Not separately backed up.'],
+    notes: [
+      'Derived ranking from history; covered by the history backup. Not separately backed up.',
+    ],
   };
 
   caps.contentSettings = {

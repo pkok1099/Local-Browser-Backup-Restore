@@ -31,7 +31,10 @@ function artifactFilename(backupId) {
 }
 
 // text: the serialized artifact (plaintext backup JSON or encrypted envelope JSON).
-export async function makeRemoteArtifact(text, { backupId, filename, createdAt, trigger, browser } = {}) {
+export async function makeRemoteArtifact(
+  text,
+  { backupId, filename, createdAt, trigger, browser } = {}
+) {
   if (typeof text !== 'string' || text.length === 0) {
     throw new TypedError('ERR_MALFORMED', 'Artifact text is empty.');
   }
@@ -43,7 +46,10 @@ export async function makeRemoteArtifact(text, { backupId, filename, createdAt, 
   }
   const encrypted = obj.format === ENCRYPTED_FORMAT_ID;
   if (!encrypted && obj.format !== FORMAT_ID) {
-    throw new TypedError('ERR_UNKNOWN_FORMAT', `Unknown artifact format "${obj.format}".`);
+    throw new TypedError(
+      'ERR_UNKNOWN_FORMAT',
+      `Unknown artifact format "${obj.format}".`
+    );
   }
   const id = backupId || makeBackupId();
   const bytes = new TextEncoder().encode(text);
@@ -56,7 +62,8 @@ export async function makeRemoteArtifact(text, { backupId, filename, createdAt, 
     sha256Hex: await sha256Hex(text), // digest over the exact stored bytes
     encrypted,
     formatId: obj.format,
-    formatVersion: obj.formatVersion !== undefined ? obj.formatVersion : FORMAT_VERSION,
+    formatVersion:
+      obj.formatVersion !== undefined ? obj.formatVersion : FORMAT_VERSION,
     encryptionVersion: encrypted ? obj.encryptionVersion || 1 : null,
     createdAt: createdAt || new Date().toISOString(),
     trigger: trigger || 'manual',
@@ -78,7 +85,11 @@ export function manifestEntryFromArtifact(artifact) {
     formatVersion: artifact.formatVersion,
     encrypted: artifact.encrypted,
     encryptionVersion: artifact.encryptionVersion,
-    integrity: { algorithm: 'sha256', encoding: 'utf8', digest: artifact.sha256Hex },
+    integrity: {
+      algorithm: 'sha256',
+      encoding: 'utf8',
+      digest: artifact.sha256Hex,
+    },
     browser: artifact.browser,
     trigger: artifact.trigger,
   };
@@ -96,14 +107,28 @@ export function newRemoteManifest() {
 // Newest first. Corrupt/foreign entries are dropped so a hand-edited or
 // partially-written manifest cannot break listing.
 export function normalizeManifest(obj) {
-  if (!obj || obj.format !== REMOTE_MANIFEST_ID || !Array.isArray(obj.backups)) {
-    throw new TypedError('ERR_MALFORMED', 'Remote manifest is malformed or is not a backup manifest.');
+  if (
+    !obj ||
+    obj.format !== REMOTE_MANIFEST_ID ||
+    !Array.isArray(obj.backups)
+  ) {
+    throw new TypedError(
+      'ERR_MALFORMED',
+      'Remote manifest is malformed or is not a backup manifest.'
+    );
   }
   const seen = new Set();
   const backups = [];
   for (const b of obj.backups) {
-    if (!b || typeof b.id !== 'string' || typeof b.filename !== 'string' || seen.has(b.id)) continue;
-    if (!/^[A-Za-z0-9._/-]+$/.test(b.filename) || b.filename.includes('..')) continue; // path traversal guard
+    if (
+      !b ||
+      typeof b.id !== 'string' ||
+      typeof b.filename !== 'string' ||
+      seen.has(b.id)
+    )
+      continue;
+    if (!/^[A-Za-z0-9._/-]+$/.test(b.filename) || b.filename.includes('..'))
+      continue; // path traversal guard
     seen.add(b.id);
     backups.push({
       id: b.id,
@@ -113,14 +138,17 @@ export function normalizeManifest(obj) {
       format: b.format || null,
       formatVersion: b.formatVersion || null,
       encrypted: !!b.encrypted,
-      encryptionVersion: b.encryptionVersion !== undefined ? b.encryptionVersion : null,
+      encryptionVersion:
+        b.encryptionVersion !== undefined ? b.encryptionVersion : null,
       integrity: b.integrity || null,
       browser: b.browser || null,
       trigger: b.trigger || 'manual',
     });
   }
   backups.sort(
-    (a, b2) => (b2.createdAt || '').localeCompare(a.createdAt || '') || (b2.id || '').localeCompare(a.id || '')
+    (a, b2) =>
+      (b2.createdAt || '').localeCompare(a.createdAt || '') ||
+      (b2.id || '').localeCompare(a.id || '')
   );
   return {
     format: REMOTE_MANIFEST_ID,
@@ -146,15 +174,25 @@ export function upsertManifestEntry(manifest, entry) {
 // The guard also cross-checks the artifact's own consistency so a mislabeled
 // artifact can never slip through.
 
-export function assertUploadSafe(artifact, { repoPublic, plaintextAllowed = false } = {}) {
-  if (!artifact || typeof artifact !== 'object' || typeof artifact.text !== 'string') {
+export function assertUploadSafe(
+  artifact,
+  { repoPublic, plaintextAllowed = false } = {}
+) {
+  if (
+    !artifact ||
+    typeof artifact !== 'object' ||
+    typeof artifact.text !== 'string'
+  ) {
     throw new TypedError('ERR_MALFORMED', 'Upload guard: invalid artifact.');
   }
   const obj = JSON.parse(artifact.text);
   const isEncryptedFormat = obj.format === ENCRYPTED_FORMAT_ID;
   const isPlainFormat = obj.format === FORMAT_ID;
   if (!isEncryptedFormat && !isPlainFormat) {
-    throw new TypedError('ERR_UNKNOWN_FORMAT', 'Upload guard: not a browser backup artifact.');
+    throw new TypedError(
+      'ERR_UNKNOWN_FORMAT',
+      'Upload guard: not a browser backup artifact.'
+    );
   }
   if (artifact.encrypted !== isEncryptedFormat) {
     throw new TypedError(

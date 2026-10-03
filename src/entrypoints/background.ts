@@ -12,7 +12,12 @@ import {
   ALARM_PERIOD_MINUTES,
   CLOUD_RETRY_ALARM,
 } from '@/lib/scheduler';
-import { loadCloudConfig, beginScheduledRun, getCloudRetryInfo, restoreCloudRetryAlarm } from '@/lib/cloud';
+import {
+  loadCloudConfig,
+  beginScheduledRun,
+  getCloudRetryInfo,
+  restoreCloudRetryAlarm,
+} from '@/lib/cloud';
 
 export default defineBackground(() => {
   // Mobile browsers often render extension popups in a cramped or unreliable
@@ -23,12 +28,18 @@ export default defineBackground(() => {
   });
 
   async function ensureAlarm() {
-    await chrome.alarms.create(SCHEDULE_CHECK_ALARM, { periodInMinutes: ALARM_PERIOD_MINUTES, delayInMinutes: 0.5 });
+    await chrome.alarms.create(SCHEDULE_CHECK_ALARM, {
+      periodInMinutes: ALARM_PERIOD_MINUTES,
+      delayInMinutes: 0.5,
+    });
   }
 
   // Evaluate the schedule; if today's backup has not succeeded yet and the
   // scheduled time has passed, open the dashboard to run it (catch-up included).
-  async function checkScheduleAndRun(): Promise<{ ran: boolean; reason?: string }> {
+  async function checkScheduleAndRun(): Promise<{
+    ran: boolean;
+    reason?: string;
+  }> {
     let cfg, state;
     try {
       cfg = await loadCloudConfig();
@@ -42,7 +53,9 @@ export default defineBackground(() => {
     if (isLocked(state)) return { ran: false, reason: 'locked' };
 
     // Never open a second scheduled-run tab.
-    const open = await chrome.tabs.query({ url: `${chrome.runtime.getURL('dashboard.html')}*` });
+    const open = await chrome.tabs.query({
+      url: `${chrome.runtime.getURL('dashboard.html')}*`,
+    });
     if (open.some((t) => (t.url || '').includes('action=cloud-scheduled'))) {
       return { ran: false, reason: 'already-open' };
     }
@@ -57,18 +70,28 @@ export default defineBackground(() => {
     return { ran: true, reason: decision.reason };
   }
 
-  async function checkCloudRetryAndRun(): Promise<{ ran: boolean; reason?: string; retryCount?: number }> {
+  async function checkCloudRetryAndRun(): Promise<{
+    ran: boolean;
+    reason?: string;
+    retryCount?: number;
+  }> {
     let info;
     try {
       info = await getCloudRetryInfo();
     } catch {
       return { ran: false, reason: 'storage-error' };
     }
-    if (!info.enabled || !info.pending || info.pending.retryExhausted || info.pending.retryCancelled) {
+    if (
+      !info.enabled ||
+      !info.pending ||
+      info.pending.retryExhausted ||
+      info.pending.retryCancelled
+    ) {
       return { ran: false, reason: 'disabled-or-empty' };
     }
     const retryAt = Date.parse(info.pending.retryAt || '');
-    if (!Number.isFinite(retryAt) || retryAt > Date.now()) return { ran: false, reason: 'not-due' };
+    if (!Number.isFinite(retryAt) || retryAt > Date.now())
+      return { ran: false, reason: 'not-due' };
 
     const dashboardUrl = chrome.runtime.getURL('dashboard.html');
     const open = await chrome.tabs.query({ url: `${dashboardUrl}*` });

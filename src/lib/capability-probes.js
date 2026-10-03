@@ -2,7 +2,9 @@ import { hasCompressionStream } from './util.js';
 import { createSiteLogger } from './site-log.js';
 
 const has = (namespace) =>
-  typeof chrome !== 'undefined' && chrome[namespace] !== undefined && chrome[namespace] !== null;
+  typeof chrome !== 'undefined' &&
+  chrome[namespace] !== undefined &&
+  chrome[namespace] !== null;
 const probeLogger = createSiteLogger({ crawlId: 'capability-probes' });
 
 function errorMessage(error) {
@@ -44,7 +46,10 @@ async function probeBookmarkDateAdded(results, reportFailure) {
   let folderId = null;
   let bookmarkId = null;
   try {
-    const folder = await chrome.bookmarks.create({ parentId: '2', title: '__bbr_probe_' + Date.now() });
+    const folder = await chrome.bookmarks.create({
+      parentId: '2',
+      title: '__bbr_probe_' + Date.now(),
+    });
     folderId = folder.id;
     const fakeDate = 1000;
     const bookmark = await chrome.bookmarks.create({
@@ -86,7 +91,11 @@ async function probeHistory(results, reportFailure) {
   const probeUrl = 'https://bbr-probe.example/bbr-history-probe';
   try {
     await chrome.history.addUrl({ url: probeUrl });
-    const found = await chrome.history.search({ text: 'bbr-history-probe', startTime: 0, maxResults: 10 });
+    const found = await chrome.history.search({
+      text: 'bbr-history-probe',
+      startTime: 0,
+      maxResults: 10,
+    });
     const hit = found.find((item) => item.url === probeUrl);
     const visits = hit ? await chrome.history.getVisits({ url: probeUrl }) : [];
     addUrlResult = {
@@ -96,7 +105,11 @@ async function probeHistory(results, reportFailure) {
       lastVisitTimeSet: hit ? hit.lastVisitTime : null,
       transition: visits[0] ? visits[0].transition : null,
     };
-    if (!hit) reportFailure('history.addUrl', new Error('probe URL was not found after addUrl'));
+    if (!hit)
+      reportFailure(
+        'history.addUrl',
+        new Error('probe URL was not found after addUrl')
+      );
   } catch (error) {
     addUrlResult = { works: false, error: error.message || String(error) };
     reportFailure('history.addUrl', error);
@@ -138,7 +151,10 @@ async function probeCookiePartitionKey(results, reportFailure) {
     };
     const cookie = await chrome.cookies.set(details);
     if (cookie) {
-      partitioned = { works: true, partitionKeyEcho: cookie.partitionKey ?? null };
+      partitioned = {
+        works: true,
+        partitionKeyEcho: cookie.partitionKey ?? null,
+      };
       await removePartitionedProbeCookie();
     } else {
       const fallback = await chrome.cookies.set({
@@ -146,7 +162,10 @@ async function probeCookiePartitionKey(results, reportFailure) {
         name: '__bbr_probe',
         value: '1',
         secure: true,
-        partitionKey: { topLevelSite: 'https://bbr-probe.example/', hasCrossSiteAncestor: false },
+        partitionKey: {
+          topLevelSite: 'https://bbr-probe.example/',
+          hasCrossSiteAncestor: false,
+        },
       });
       if (fallback) {
         partitioned = {
@@ -158,14 +177,16 @@ async function probeCookiePartitionKey(results, reportFailure) {
       } else {
         partitioned = {
           works: false,
-          error: 'cookies.set resolved null (browser refused a partitioned cookie via the extension API)',
+          error:
+            'cookies.set resolved null (browser refused a partitioned cookie via the extension API)',
         };
       }
     }
   } catch (error) {
     partitioned = { works: false, error: error.message || String(error) };
   }
-  if (!partitioned.works) reportFailure('cookies.partitionKey', new Error(partitioned.error));
+  if (!partitioned.works)
+    reportFailure('cookies.partitionKey', new Error(partitioned.error));
   results.cookiesPartitionKey = partitioned;
 }
 
@@ -176,14 +197,21 @@ async function probeCookieFirstPartyDomain(results, reportFailure) {
       name: '__bbr_plain',
       value: 'x',
     });
-    results.cookiesFirstPartyDomainField = cookie && 'firstPartyDomain' in cookie;
+    results.cookiesFirstPartyDomainField =
+      cookie && 'firstPartyDomain' in cookie;
     try {
-      await chrome.cookies.remove({ url: 'https://bbr-probe.example/', name: '__bbr_plain' });
+      await chrome.cookies.remove({
+        url: 'https://bbr-probe.example/',
+        name: '__bbr_plain',
+      });
     } catch (error) {
       /* best-effort cleanup */
     }
     if (!results.cookiesFirstPartyDomainField) {
-      reportFailure('cookies.firstPartyDomain', new Error('cookie response omitted firstPartyDomain'));
+      reportFailure(
+        'cookies.firstPartyDomain',
+        new Error('cookie response omitted firstPartyDomain')
+      );
     }
   } catch (error) {
     results.cookiesFirstPartyDomainField = 'error';
@@ -212,12 +240,24 @@ async function probeReadingListRoundTrip(results, reportFailure) {
         lastUpdateTime: fakeTime,
       });
     } catch (error) {
-      await chrome.readingList.addEntry({ url, title: 'probe', hasBeenRead: false });
+      await chrome.readingList.addEntry({
+        url,
+        title: 'probe',
+        hasBeenRead: false,
+      });
     }
     const list = await chrome.readingList.getEntries({});
     const found = list.find((item) => item.url === url);
-    if (found) result = { creationTimeHonored: found.creationTime === fakeTime, fields: Object.keys(found).sort() };
-    else reportFailure('readingList.roundTrip', new Error('probe entry was not returned by getEntries'));
+    if (found)
+      result = {
+        creationTimeHonored: found.creationTime === fakeTime,
+        fields: Object.keys(found).sort(),
+      };
+    else
+      reportFailure(
+        'readingList.roundTrip',
+        new Error('probe entry was not returned by getEntries')
+      );
   } catch (error) {
     result = 'error: ' + (error.message || 'unknown');
     reportFailure('readingList.roundTrip', error);
@@ -261,7 +301,9 @@ export async function runCapabilityProbes({ onError } = {}) {
     ['cookies', () => has('cookies'), probeCookies],
     [
       'readingList',
-      () => has('readingList') && typeof chrome.readingList.getEntries === 'function',
+      () =>
+        has('readingList') &&
+        typeof chrome.readingList.getEntries === 'function',
       probeReadingListRoundTrip,
     ],
     ['compressionStream', () => true, probeCompression],
@@ -271,6 +313,7 @@ export async function runCapabilityProbes({ onError } = {}) {
   for (const [name, isAvailable, probe] of categories) {
     await probeCategory(name, isAvailable, probe, results, reportFailure);
   }
-  if (reportFailure.count() && typeof onError !== 'function') await probeLogger.flush();
+  if (reportFailure.count() && typeof onError !== 'function')
+    await probeLogger.flush();
   return results;
 }

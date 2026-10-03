@@ -5,12 +5,21 @@ import { installTestHooks } from '@/dashboard/api';
 import { initThemeSync } from '@/dashboard/theme';
 
 function isOwnedTabsRecord(value: unknown): value is { tabIds: number[] } {
-  if (typeof value !== 'object' || value === null || !('tabIds' in value)) return false;
+  if (typeof value !== 'object' || value === null || !('tabIds' in value))
+    return false;
   const tabIds = (value as { tabIds?: unknown }).tabIds;
-  return Array.isArray(tabIds) && tabIds.every((tabId: unknown) => Number.isInteger(tabId));
+  return (
+    Array.isArray(tabIds) &&
+    tabIds.every((tabId: unknown) => Number.isInteger(tabId))
+  );
 }
 
-function logPreviousSessionCleanup(level: string, category: string, message: string, context: Record<string, unknown>) {
+function logPreviousSessionCleanup(
+  level: string,
+  category: string,
+  message: string,
+  context: Record<string, unknown>
+) {
   void import('@/dashboard/site-log-store').then(({ pushSiteLogEntry }) => {
     pushSiteLogEntry({
       seq: 0,
@@ -48,9 +57,13 @@ installTestHooks();
 // Clean prior scan tabs after the initial UI has had a chance to render.
 window.setTimeout(() => {
   const idleWindow = window as Window & {
-    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    requestIdleCallback?: (
+      callback: () => void,
+      options?: { timeout: number }
+    ) => number;
   };
-  if (idleWindow.requestIdleCallback) idleWindow.requestIdleCallback(cleanupPreviousSession, { timeout: 1500 });
+  if (idleWindow.requestIdleCallback)
+    idleWindow.requestIdleCallback(cleanupPreviousSession, { timeout: 1500 });
   else cleanupPreviousSession();
 }, 250);
 

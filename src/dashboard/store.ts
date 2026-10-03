@@ -25,6 +25,7 @@ type RestoreOptions = {
   bm: boolean; // bookmarks replace (destructive)
   sd: boolean; // site data replace (destructive)
   dl: boolean; // downloads redownload
+  sdLive: boolean; // site data: write partitioned data into currently open tabs
 };
 
 type RestoreSummary = {
@@ -37,7 +38,13 @@ type RestoreSummary = {
 
 export type ResultLine = {
   label: string;
-  outcome: 'complete' | 'partial' | 'failed' | 'unavailable' | 'skipped_by_user' | 'not_in_backup';
+  outcome:
+    | 'complete'
+    | 'partial'
+    | 'failed'
+    | 'unavailable'
+    | 'skipped_by_user'
+    | 'not_in_backup';
   outcomeCounts?: { succeeded: number; failed: number; skipped: number };
   summary: string;
   notes: string[];
@@ -76,10 +83,24 @@ export type CapsRow = {
 };
 
 export type DashboardActivityKind =
-  'backup' | 'site-data-retry' | 'cloud-backup' | 'restore' | 'probes' | 'download' | 'clear-results' | 'clear-logs';
+  | 'backup'
+  | 'site-data-retry'
+  | 'cloud-backup'
+  | 'restore'
+  | 'probes'
+  | 'download'
+  | 'clear-results'
+  | 'clear-logs';
 
 // Live counters reported by the website-data scan workers (null when idle).
-export type UrlStatus = 'pending' | 'fetching' | 'fetched' | 'saved' | 'fetch-failed' | 'save-failed' | 'skipped';
+export type UrlStatus =
+  | 'pending'
+  | 'fetching'
+  | 'fetched'
+  | 'saved'
+  | 'fetch-failed'
+  | 'save-failed'
+  | 'skipped';
 export type UrlState = {
   origin: string;
   status: UrlStatus;
@@ -94,6 +115,7 @@ export type SiteScanStats = {
   aborted: number;
   total: number;
   inGroup: number;
+  inErrorGroup?: number;
   slotsUsed: number;
   slotsTotal: number;
   queue: number; // slots waiting + tabs queued for reading
@@ -117,7 +139,11 @@ export type AppState = {
     summary: SummaryLine[];
     foldersNote: string | null;
     siteScan: SiteScanStats | null;
-    downloadInfo?: { ready: boolean; siteCount: number; estBytes: number } | null;
+    downloadInfo?: {
+      ready: boolean;
+      siteCount: number;
+      estBytes: number;
+    } | null;
   };
   password: {
     open: boolean;
@@ -136,13 +162,27 @@ export type AppState = {
     status: string;
     detail: string;
     progress: { visible: boolean; frac: number };
-    repoInfo: { account: string; fullName: string; isPublic: boolean; branch: string } | null;
+    repoInfo: {
+      account: string;
+      fullName: string;
+      isPublic: boolean;
+      branch: string;
+    } | null;
     repoInfoError: string | null;
     form: CloudForm;
-    retry: { syncVisible: boolean; syncLabel: string; status: string | null; cancelVisible: boolean };
+    retry: {
+      syncVisible: boolean;
+      syncLabel: string;
+      status: string | null;
+      cancelVisible: boolean;
+    };
     schedState: string;
     settingsStatus: string;
-    remoteList: { loading: boolean; error: string | null; refs: RemoteRef[] } | null;
+    remoteList: {
+      loading: boolean;
+      error: string | null;
+      refs: RemoteRef[];
+    } | null;
     settingsImportKey: number;
   };
   caps: {
@@ -198,7 +238,12 @@ const initialState: AppState = {
     repoInfo: null,
     repoInfoError: null,
     form: { ...emptyForm },
-    retry: { syncVisible: false, syncLabel: 'Retry pending upload', status: null, cancelVisible: false },
+    retry: {
+      syncVisible: false,
+      syncLabel: 'Retry pending upload',
+      status: null,
+      cancelVisible: false,
+    },
     schedState: '',
     settingsStatus: '',
     remoteList: null,
@@ -231,7 +276,9 @@ function updateActivityCount() {
   const activeOperations =
     localActivityIds.size +
     remoteActivityIds.size +
-    (lockQueryActive && !localActivityIds.size && !remoteActivityIds.size ? 1 : 0);
+    (lockQueryActive && !localActivityIds.size && !remoteActivityIds.size
+      ? 1
+      : 0);
   if (state.activeOperations === activeOperations) return;
   state = { ...state, activeOperations };
   emit();
@@ -253,7 +300,11 @@ async function refreshActivityFromLocks() {
   } catch {
     // A failed query must remain fail-closed for Clear Results.
   }
-  if (sequence !== lockQuerySequence || eventGeneration !== activityEventGeneration) return;
+  if (
+    sequence !== lockQuerySequence ||
+    eventGeneration !== activityEventGeneration
+  )
+    return;
   lockQueryActive = active;
   if (!active) remoteActivityIds.clear();
   updateActivityCount();
@@ -261,7 +312,11 @@ async function refreshActivityFromLocks() {
 
 if (typeof window !== 'undefined') {
   activityChannel?.addEventListener('message', (event: MessageEvent) => {
-    const message = event.data as { sourceId?: unknown; operationId?: unknown; active?: unknown };
+    const message = event.data as {
+      sourceId?: unknown;
+      operationId?: unknown;
+      active?: unknown;
+    };
     if (
       typeof message?.sourceId !== 'string' ||
       message.sourceId === activityPageId ||
@@ -281,39 +336,65 @@ if (typeof window !== 'undefined') {
   });
   void refreshActivityFromLocks();
   window.addEventListener('focus', () => void refreshActivityFromLocks());
-  document.addEventListener('visibilitychange', () => void refreshActivityFromLocks());
-}
-
-export function hasUnresolvedSiteScan(siteScan: AppState['backup']['siteScan']): boolean {
-  return !!siteScan?.urlStates.some((url) =>
-    ['pending', 'fetching', 'fetched', 'fetch-failed', 'save-failed'].includes(url.status)
+  document.addEventListener(
+    'visibilitychange',
+    () => void refreshActivityFromLocks()
   );
 }
 
-export async function withDashboardActivity<T>(kind: DashboardActivityKind, operation: () => Promise<T>): Promise<T> {
+export function hasUnresolvedSiteScan(
+  siteScan: AppState['backup']['siteScan']
+): boolean {
+  return !!siteScan?.urlStates.some((url) =>
+    ['pending', 'fetching', 'fetched', 'fetch-failed', 'save-failed'].includes(
+      url.status
+    )
+  );
+}
+
+export async function withDashboardActivity<T>(
+  kind: DashboardActivityKind,
+  operation: () => Promise<T>
+): Promise<T> {
   const operationId = `${activityPageId}:${++activitySequence}:${kind}`;
   localActivityIds.add(operationId);
   updateActivityCount();
   let announced = false;
   try {
-    const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+    const locks =
+      typeof navigator !== 'undefined' ? navigator.locks : undefined;
     if (!locks?.request) {
       if (kind === 'clear-results' || kind === 'clear-logs') {
-        throw new Error('Web Locks are unavailable; clearing is disabled for safety.');
+        throw new Error(
+          'Web Locks are unavailable; clearing is disabled for safety.'
+        );
       }
       return await operation();
     }
-    return await locks.request(ACTIVITY_LOCK, { mode: 'exclusive', ifAvailable: true }, async (lock) => {
-      if (!lock) throw new Error('Dashboard is busy with another operation.');
-      activityChannel?.postMessage({ sourceId: activityPageId, operationId, active: true });
-      announced = !!activityChannel;
-      return operation();
-    });
+    return await locks.request(
+      ACTIVITY_LOCK,
+      { mode: 'exclusive', ifAvailable: true },
+      async (lock) => {
+        if (!lock) throw new Error('Dashboard is busy with another operation.');
+        activityChannel?.postMessage({
+          sourceId: activityPageId,
+          operationId,
+          active: true,
+        });
+        announced = !!activityChannel;
+        return operation();
+      }
+    );
   } finally {
     localActivityIds.delete(operationId);
     lockQueryActive = false;
     updateActivityCount();
-    if (announced) activityChannel?.postMessage({ sourceId: activityPageId, operationId, active: false });
+    if (announced)
+      activityChannel?.postMessage({
+        sourceId: activityPageId,
+        operationId,
+        active: false,
+      });
     void refreshActivityFromLocks();
   }
 }
@@ -322,7 +403,9 @@ export function getState(): AppState {
   return state;
 }
 
-export function setState(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>)) {
+export function setState(
+  patch: Partial<AppState> | ((s: AppState) => Partial<AppState>)
+) {
   const p = typeof patch === 'function' ? patch(state) : patch;
   state = { ...state, ...p };
   emit();
@@ -342,7 +425,10 @@ export function patchState<K extends keyof AppState>(
 }
 
 export function updateForm(patch: Partial<CloudForm>) {
-  state = { ...state, cloud: { ...state.cloud, form: { ...state.cloud.form, ...patch } } };
+  state = {
+    ...state,
+    cloud: { ...state.cloud, form: { ...state.cloud.form, ...patch } },
+  };
   emit();
 }
 
