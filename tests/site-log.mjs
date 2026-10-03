@@ -1,7 +1,44 @@
 // Unit test for the centralized site-data logger (src/lib/site-log.js).
 import assert from 'node:assert/strict';
 
-const { createSiteLogger, LOG_LEVELS, LOG_CATEGORIES, formatLogTs } = await import('../src/lib/site-log.js');
+const { clearPersistedSiteLog, createSiteLogger, LOG_LEVELS, LOG_CATEGORIES, formatLogTs, selectLogEntriesToTrim } = await import('../src/lib/site-log.js');
+
+// Explicit clear must fail closed if IndexedDB cannot be opened.
+{
+  await assert.rejects(clearPersistedSiteLog(), /IndexedDB is unavailable/);
+  console.log('PASS site-log clear: rejects when IndexedDB is unavailable');
+}
+
+// Trimming always enforces the cap, prioritizes severity, and breaks timestamp ties by ID.
+{
+  const mixedRows = [
+    { id: 'fatal-newer', level: 'FATAL', ts: 7 },
+    { id: 'error-old', level: 'ERROR', ts: 5 },
+    { id: 'fatal-old', level: 'FATAL', ts: 0 },
+    { id: 'info-old', level: 'INFO', ts: 2 },
+    { id: 'warn-old', level: 'WARN', ts: 4 },
+    { id: 'debug-old', level: 'DEBUG', ts: 1 },
+    { id: 'fatal-new', level: 'FATAL', ts: 6 },
+  ];
+  const mixedIdsToTrim = selectLogEntriesToTrim(mixedRows, 3);
+  assert.deepEqual(mixedIdsToTrim, ['debug-old', 'info-old', 'warn-old', 'error-old']);
+  assert.ok(mixedRows.filter((entry) => !mixedIdsToTrim.includes(entry.id)).length <= 3);
+
+  const fatalRows = [
+    { id: 'fatal-c', level: 'FATAL', ts: 2 },
+    { id: 'fatal-new', level: 'FATAL', ts: 3 },
+    { id: 'fatal-a', level: 'FATAL', ts: 2 },
+    { id: 'fatal-old', level: 'FATAL', ts: 1 },
+    { id: 'fatal-b', level: 'FATAL', ts: 2 },
+  ];
+  const fatalIdsToTrim = selectLogEntriesToTrim(fatalRows, 3);
+  assert.deepEqual(fatalIdsToTrim, ['fatal-old', 'fatal-a']);
+  assert.deepEqual(
+    fatalRows.filter((entry) => !fatalIdsToTrim.includes(entry.id)).map((entry) => entry.id).sort(),
+    ['fatal-b', 'fatal-c', 'fatal-new'],
+  );
+  console.log('PASS site-log: severity-first trimming enforces cap and retains newest fatal entries');
+}
 
 // Levels and categories are fixed.
 assert.deepEqual(Object.keys(LOG_LEVELS), ['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL']);
@@ -52,6 +89,18 @@ assert.ok(LOG_CATEGORIES.includes('CPU') && LOG_CATEGORIES.includes('LOAD'));
   assert.equal(logger.counts.DEBUG, 1);
   assert.equal(logger.counts.FATAL, 1);
   console.log('PASS site-log: level shorthands');
+}
+
+// Stable IDs are unique across logger instances even when their crawlId and seq match.
+{
+  const first = createSiteLogger({ crawlId: 'same-crawl' }).info('W1', 'first entry');
+  const second = createSiteLogger({ crawlId: 'same-crawl' }).info('W1', 'second entry');
+  assert.equal(first.seq, 0, 'seq remains a per-logger ordering field');
+  assert.equal(second.seq, 0, 'a new logger may restart seq');
+  assert.ok(typeof first.id === 'string' && first.id.length > 0, 'structured entries need a stable ID');
+  assert.ok(typeof second.id === 'string' && second.id.length > 0, 'structured entries need a stable ID');
+  assert.notEqual(first.id, second.id, 'logger instances must not collide on entry identity');
+  console.log('PASS site-log: stable IDs across logger instances');
 }
 
 // Timestamp formatting includes milliseconds.

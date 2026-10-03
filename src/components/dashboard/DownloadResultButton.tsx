@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { useApp } from '@/dashboard/store';
-import { downloadBackupResult, getDownloadInfo } from '@/dashboard/logic';
 
 // "Download hasil" button: the backup is stored in extension storage (no
 // auto-download). The file is built only when clicked. Shows site count and
@@ -11,12 +10,13 @@ export function DownloadResultButton() {
   const state = useApp();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const info = state.backup.downloadInfo || getDownloadInfo();
+  const info = state.backup.downloadInfo || { ready: false, siteCount: 0, estBytes: 0 };
 
   const onClick = async () => {
     setBusy(true);
     setError(null);
     try {
+      const { downloadBackupResult } = await import('@/dashboard/logic');
       await downloadBackupResult();
     } catch (e) {
       setError((e as Error)?.message || String(e));

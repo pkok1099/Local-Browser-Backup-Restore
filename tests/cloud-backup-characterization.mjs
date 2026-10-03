@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { CONFIG_KEY, PENDING_KEY, runCloudBackup } from '../src/lib/cloud.js';
+import { finalizeIntegrity } from '../src/lib/format.js';
 
 globalThis.crypto ??= webcrypto;
 const events = [];
@@ -40,6 +41,7 @@ const backup = {
   counts: { bookmarks: 1 },
   data: { bookmarks: { roots: { bookmark_bar: { children: [{ title: 'fixture' }] } } } },
 };
+await finalizeIntegrity(backup);
 const result = await runCloudBackup({
   collectOptions,
   plaintextAck: true,
@@ -78,4 +80,21 @@ assert.ok(collect >= 0 && collect < download, 'collection precedes the user-faci
 assert.ok(download < artifactWrite, 'the optional local download is attempted before the durable provider write');
 assert.ok(artifactWrite < manifestWrite && manifestWrite < verificationRead, 'provider writes artifact, updates manifest, then verifies the stored bytes');
 assert.ok(verificationRead < successPhase, 'success is recorded only after local verification');
+
+const invalidBackup = structuredClone(backup);
+invalidBackup.counts.bookmarks = 2;
+events.length = 0;
+await assert.rejects(
+  runCloudBackup({
+    collectOptions,
+    plaintextAck: true,
+    trigger: 'characterization-invalid',
+    collectBackup: async () => invalidBackup,
+    downloadArtifact: async () => events.push('download:invalid'),
+  }),
+  (error) => error.code === 'ERR_CHECKSUM_MISMATCH'
+);
+assert.equal(events.some((event) => event.startsWith('download:')), false, 'invalid artifacts are rejected before the optional download callback');
+assert.equal(events.some((event) => event.startsWith('storage:set:bbr:artifact:')), false, 'invalid artifacts are rejected before the durable artifact write');
+assert.equal(events.includes('storage:set:bbr:local-manifest:'), false, 'invalid artifacts are rejected before the manifest write');
 console.log('PASS runCloudBackup characterization: input passthrough, output, optional-copy failure, and durable side-effect order');
