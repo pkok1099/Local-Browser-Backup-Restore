@@ -44,6 +44,7 @@ async function restoreBookmarks(data, opts, progress) {
           if (k.url) await chrome.bookmarks.remove(k.id);
           else await chrome.bookmarks.removeTree(k.id);
         } catch (e) {
+          stats.failed++;
           stats.notes.push(`could not clear existing bookmark node ${k.id}}: ${e.message}`);
         }
       }
@@ -161,7 +162,17 @@ const VALID_STATES = ['normal', 'minimized', 'maximized', 'fullscreen'];
 
 // eslint-disable-next-line complexity -- TECH DEBT: complexity 37, refactoring risks behavior change
 export async function restoreTabsWindows(data, opts, progress) {
-  const stats = { windowsCreated: 0, tabsCreated: 0, tabsFailed: 0, pinned: 0, muted: 0, grouped: 0, notes: [] };
+  const stats = {
+    windowsCreated: 0,
+    tabsCreated: 0,
+    tabsFailed: 0,
+    windowGeometryFailures: 0,
+    pinned: 0,
+    muted: 0,
+    grouped: 0,
+    notes: [],
+  };
+  const failedTabIndexes = new Set();
   const groupMetaByOldId = new Map((data.tabGroups || []).map((g) => [String(g.groupId), g]));
 
   const windows = data.windows || [];
@@ -196,6 +207,7 @@ export async function restoreTabsWindows(data, opts, progress) {
       try {
         win = await chrome.windows.create(createProps);
       } catch (e) {
+        stats.windowGeometryFailures++;
         stats.notes.push(`window ${wi}} could not be created with geometry (${e.message}); retrying default`);
         win = await chrome.windows.create({ focused: false });
       }
@@ -242,6 +254,7 @@ export async function restoreTabsWindows(data, opts, progress) {
             return record;
           } catch (e) {
             stats.tabsFailed++;
+            failedTabIndexes.add(`${wi}:${ti}`);
             stats.notes.push(`tab failed: ${t.url}}: ${e.message}`);
             return null;
           }
@@ -258,6 +271,7 @@ export async function restoreTabsWindows(data, opts, progress) {
             jobs.push(
               chrome.tabs.update(id, { url: t.url, active: false }).catch((e) => {
                 stats.tabsFailed++;
+                failedTabIndexes.add(`${wi}:${ti}`);
                 stats.notes.push(`tab navigation failed: ${t.url}: ${e.message}`);
               })
             );
@@ -269,7 +283,10 @@ export async function restoreTabsWindows(data, opts, progress) {
                 .then(() => {
                   stats.pinned++;
                 })
-                .catch((e) => stats.notes.push(`pin failed: ${t.url}: ${e.message}`))
+                .catch((e) => {
+                  failedTabIndexes.add(`${wi}:${ti}`);
+                  stats.notes.push(`pin failed: ${t.url}: ${e.message}`);
+                })
             );
           if (t.muted)
             jobs.push(
@@ -278,7 +295,10 @@ export async function restoreTabsWindows(data, opts, progress) {
                 .then(() => {
                   stats.muted++;
                 })
-                .catch((e) => stats.notes.push(`mute failed: ${t.url}: ${e.message}`))
+                .catch((e) => {
+                  failedTabIndexes.add(`${wi}:${ti}`);
+                  stats.notes.push(`mute failed: ${t.url}: ${e.message}`);
+                })
             );
           if (t.groupId !== undefined) {
             const key = String(t.groupId);
@@ -302,6 +322,7 @@ export async function restoreTabsWindows(data, opts, progress) {
       try {
         await chrome.tabs.move(tab.id, { windowId: win.id, index: orderOffset + tab.index });
       } catch (e) {
+        failedTabIndexes.add(`${wi}:${tab.index}`);
         stats.notes.push(`tab ordering failed: ${tab.tab.url}: ${e.message}`);
       }
     }
@@ -326,11 +347,13 @@ export async function restoreTabsWindows(data, opts, progress) {
           try {
             await chrome.tabGroups.update(newGid, upd);
           } catch (e) {
+            for (const tab of groupedTabs) failedTabIndexes.add(`${wi}:${tab.index}`);
             stats.notes.push(`group update failed: ${e.message}`);
           }
         }
         stats.grouped += tabIds.length;
       } catch (e) {
+        for (const tab of groupedTabs) failedTabIndexes.add(`${wi}:${tab.index}`);
         stats.notes.push(`grouping failed: ${e.message}`);
       }
     }
@@ -339,6 +362,12 @@ export async function restoreTabsWindows(data, opts, progress) {
   }
 
   stats.notes.push('Tab titles/favicons are re-fetched by the browser (no API to set titles).');
+  const tabCount = windows.reduce((count, window) => count + (window.tabs || []).length, 0);
+  stats.outcomeCounts = {
+    succeeded: tabCount - failedTabIndexes.size,
+    failed: failedTabIndexes.size + stats.windowGeometryFailures,
+    skipped: 0,
+  };
   return {
     status: 'ok',
     stats,
@@ -589,24 +618,33 @@ async function restoreReadingList(data, opts, progress) {
 
 // ---------- extension storage ----------
 
+const EXTENSION_STORAGE_ALLOWLIST = [
+  'bbr.dashboard.theme',
+  'bbr:backup-categories',
+  'bbr:site-data-scan-window',
+  'bbr:site-data-tuning',
+  'bbr:site-data-include',
+];
+
 async function restoreExtensionStorage(data, _opts, _progress) {
-  const stats = { keysLocal: 0, keysSync: 0, notes: [] };
-  if (data.local && typeof data.local === 'object') {
-    await chrome.storage.local.set(data.local);
-    stats.keysLocal = Object.keys(data.local).length;
-  }
-  if (data.sync && typeof data.sync === 'object') {
-    try {
-      await chrome.storage.sync.set(data.sync);
-      stats.keysSync = Object.keys(data.sync).length;
-    } catch (e) {
-      stats.notes.push('storage.sync restore failed: ' + e.message);
-    }
+  const local = data.local && typeof data.local === 'object' ? data.local : {};
+  const sync = data.sync && typeof data.sync === 'object' ? data.sync : {};
+  const filteredLocal = Object.fromEntries(
+    Object.entries(local).filter(([key]) => EXTENSION_STORAGE_ALLOWLIST.includes(key))
+  );
+  const stats = {
+    keysLocal: Object.keys(filteredLocal).length,
+    keysSync: 0,
+    skippedKeys: Object.keys(local).length - Object.keys(filteredLocal).length + Object.keys(sync).length,
+    notes: [],
+  };
+  if (stats.keysLocal) {
+    await chrome.storage.local.set(filteredLocal);
   }
   return {
     status: 'ok',
     stats,
-    summary: `extensionStorage: ${stats.keysLocal} local keys, ${stats.keysSync} sync keys`,
+    summary: `extensionStorage: ${stats.keysLocal} local keys, ${stats.keysSync} sync keys, ${stats.skippedKeys} skipped`,
   };
 }
 
@@ -625,7 +663,12 @@ function restoreExtensionsUnsupported(data) {
 
 async function restoreSiteData(data, opts, progress) {
   const res = await restoreSiteDataImpl(data, opts, progress);
-  return { status: res.status, stats: res.stats, summary: res.summary };
+  const stats = res.stats || {};
+  return {
+    status: res.status,
+    stats,
+    summary: `${res.summary}, ${stats.partitionsRestored || 0} partitions restored, ${stats.partitionsWithoutHost || 0} partitions without a live host`,
+  };
 }
 
 // ---------- orchestrator ----------
@@ -642,6 +685,76 @@ const RESTORE_PLAN = [
   ['installedExtensions', restoreExtensionsUnsupported],
   ['siteData', restoreSiteData],
 ];
+
+function itemOutcomeCounts(cat, data, stats) {
+  const items = (value) => (Array.isArray(value) ? value.length : 0);
+  const count = (value) => (Number.isFinite(value) && value > 0 ? value : 0);
+  if (stats.outcomeCounts) return stats.outcomeCounts;
+  switch (cat) {
+    case 'bookmarks':
+      return { succeeded: count(stats.created), failed: count(stats.failed), skipped: count(stats.skippedExisting) };
+    case 'history':
+      return {
+        succeeded: count(stats.added),
+        failed: count(stats.failed),
+        skipped: Math.max(0, items(data.items) - count(stats.added) - count(stats.failed)),
+      };
+    case 'sessions': {
+      const succeeded = count(stats.windowsReopened) + count(stats.tabsReopened);
+      return {
+        succeeded,
+        failed: count(stats.failed),
+        skipped: Math.max(0, items(data.recentlyClosed) - succeeded - count(stats.failed)),
+      };
+    }
+    case 'cookies':
+      return {
+        succeeded: count(stats.set),
+        failed: count(stats.failed),
+        skipped: Math.max(0, items(data.cookies) - count(stats.set) - count(stats.failed)),
+      };
+    case 'downloads':
+      return {
+        succeeded: count(stats.redownloaded),
+        failed: count(stats.failed),
+        skipped: Math.max(0, items(data.items) - count(stats.redownloaded) - count(stats.failed)),
+      };
+    case 'readingList':
+      return {
+        succeeded: count(stats.added),
+        failed: count(stats.failed),
+        skipped: Math.max(0, items(data.entries) - count(stats.added) - count(stats.failed)),
+      };
+    case 'extensionStorage':
+      return { succeeded: count(stats.keysLocal), failed: 0, skipped: count(stats.skippedKeys) };
+    case 'siteData': {
+      const notes = stats.notes || [];
+      const partitionFailures = notes.filter(
+        (note) =>
+          (note.startsWith('partition restore into ') && note.includes(' failed:')) ||
+          note.startsWith('partitioned restore failed:')
+      ).length;
+      const sessionStorageFailures = notes.filter((note) =>
+        note.startsWith('sessionStorage restore failed for ')
+      ).length;
+      const sessionStorageSkipped = notes.filter(
+        (note) => note.startsWith('sessionStorage of ') && note.includes(' NOT restored:')
+      ).length;
+      return {
+        succeeded: count(stats.originsRestored) + count(stats.partitionsRestored),
+        failed: count(stats.originsFailed) + partitionFailures + sessionStorageFailures,
+        skipped: count(stats.partitionsWithoutHost) + sessionStorageSkipped,
+      };
+    }
+    default:
+      return { succeeded: 0, failed: 0, skipped: 0 };
+  }
+}
+
+function outcomeFor(counts) {
+  if (!counts.failed) return 'complete';
+  return counts.succeeded ? 'partial' : 'failed';
+}
 
 // options: { bookmarks: {mode:'merge'|'replace', confirmDestructive:bool},
 //            tabsWindows: {enabled:bool}, sessions: {enabled:bool},
@@ -660,19 +773,47 @@ export async function restoreAll(backup, options, progress) {
     const opts = optFor(cat, { enabled: false });
     const present = !!data[cat];
     if (!present) {
-      results[cat] = { status: 'not_in_backup', summary: `${cat}: not present in this backup.` };
+      results[cat] = {
+        status: 'not_in_backup',
+        outcome: 'not_in_backup',
+        summary: `${cat}: not present in this backup.`,
+      };
+      continue;
+    }
+    if (opts.unavailable === true && fn !== restoreExtensionsUnsupported) {
+      results[cat] = {
+        status: 'unsupported',
+        outcome: 'unavailable',
+        summary: `${cat}: unavailable in the target browser because its restore API is not present.`,
+      };
       continue;
     }
     if (opts.enabled === false && fn !== restoreExtensionsUnsupported) {
-      results[cat] = { status: 'skipped_by_user', summary: `${cat}: skipped (disabled for this restore).` };
+      results[cat] = {
+        status: 'skipped_by_user',
+        outcome: 'skipped_by_user',
+        summary: `${cat}: skipped (disabled for this restore).`,
+      };
       continue;
     }
     if (progress) progress(`restoring: ${cat}`, cat, 'running');
     try {
-      results[cat] = await fn(data[cat], opts, (msg) => progress && progress(msg, cat, 'running'));
+      const result = await fn(data[cat], opts, (msg) => progress && progress(msg, cat, 'running'));
+      if (result.status === 'unsupported') {
+        results[cat] = { ...result, outcome: 'unavailable' };
+      } else {
+        const stats = result.stats || {};
+        const outcomeCounts = itemOutcomeCounts(cat, data[cat], stats);
+        results[cat] = { ...result, outcome: outcomeFor(outcomeCounts), stats: { ...stats, outcomeCounts } };
+      }
       if (progress) progress(`restored: ${cat}`, cat, 'ok');
     } catch (e) {
-      results[cat] = { status: 'error', summary: `${cat}}: ${(e && e.message) || String(e)}` };
+      results[cat] = {
+        status: 'error',
+        outcome: 'failed',
+        summary: `${cat}}: ${(e && e.message) || String(e)}`,
+        stats: { outcomeCounts: { succeeded: 0, failed: 1, skipped: 0 } },
+      };
     }
     await yieldToUI();
   }

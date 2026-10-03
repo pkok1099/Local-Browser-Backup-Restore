@@ -37,7 +37,8 @@ type RestoreSummary = {
 
 export type ResultLine = {
   label: string;
-  cls: 'ok' | 'warn' | 'err';
+  outcome: 'complete' | 'partial' | 'failed' | 'unavailable' | 'skipped_by_user' | 'not_in_backup';
+  outcomeCounts?: { succeeded: number; failed: number; skipped: number };
   summary: string;
   notes: string[];
 };
@@ -74,6 +75,9 @@ export type CapsRow = {
   notes: string;
 };
 
+export type DashboardActivityKind =
+  'backup' | 'site-data-retry' | 'cloud-backup' | 'restore' | 'probes' | 'download' | 'clear-results' | 'clear-logs';
+
 // Live counters reported by the website-data scan workers (null when idle).
 export type UrlStatus = 'pending' | 'fetching' | 'fetched' | 'saved' | 'fetch-failed' | 'save-failed' | 'skipped';
 export type UrlState = {
@@ -97,12 +101,14 @@ export type SiteScanStats = {
   window: number;
   windowMax: number;
   tuning: string | null;
+  logUnseenError?: boolean;
   urlStates: UrlState[];
 };
 
 export type AppState = {
   subline: string;
   logLines: string[];
+  activeOperations: number;
   backup: {
     visible: boolean;
     running: boolean;
@@ -166,6 +172,7 @@ const emptyForm: CloudForm = {
 const initialState: AppState = {
   subline: 'loading…',
   logLines: [],
+  activeOperations: 0,
   backup: {
     visible: false,
     running: false,
@@ -205,6 +212,110 @@ const listeners = new Set<() => void>();
 
 function emit() {
   for (const l of listeners) l();
+}
+
+const ACTIVITY_LOCK = 'bbr:dashboard-operation';
+const localActivityIds = new Set<string>();
+const remoteActivityIds = new Set<string>();
+const activityPageId = Math.random().toString(36).slice(2);
+let activitySequence = 0;
+let lockQueryActive = false;
+let lockQuerySequence = 0;
+let activityEventGeneration = 0;
+const activityChannel =
+  typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel('bbr-dashboard-activity')
+    : null;
+
+function updateActivityCount() {
+  const activeOperations =
+    localActivityIds.size +
+    remoteActivityIds.size +
+    (lockQueryActive && !localActivityIds.size && !remoteActivityIds.size ? 1 : 0);
+  if (state.activeOperations === activeOperations) return;
+  state = { ...state, activeOperations };
+  emit();
+}
+
+async function refreshActivityFromLocks() {
+  const sequence = ++lockQuerySequence;
+  const eventGeneration = activityEventGeneration;
+  if (typeof navigator === 'undefined' || !navigator.locks?.query) {
+    if (sequence !== lockQuerySequence) return;
+    lockQueryActive = false;
+    updateActivityCount();
+    return;
+  }
+  let active = true;
+  try {
+    const { held } = await navigator.locks.query();
+    active = !held || held.some((lock) => lock.name === ACTIVITY_LOCK);
+  } catch {
+    // A failed query must remain fail-closed for Clear Results.
+  }
+  if (sequence !== lockQuerySequence || eventGeneration !== activityEventGeneration) return;
+  lockQueryActive = active;
+  if (!active) remoteActivityIds.clear();
+  updateActivityCount();
+}
+
+if (typeof window !== 'undefined') {
+  activityChannel?.addEventListener('message', (event: MessageEvent) => {
+    const message = event.data as { sourceId?: unknown; operationId?: unknown; active?: unknown };
+    if (
+      typeof message?.sourceId !== 'string' ||
+      message.sourceId === activityPageId ||
+      typeof message.operationId !== 'string' ||
+      typeof message.active !== 'boolean'
+    ) {
+      return;
+    }
+    activityEventGeneration += 1;
+    const remoteId = `${message.sourceId}:${message.operationId}`;
+    if (message.active) remoteActivityIds.add(remoteId);
+    else {
+      remoteActivityIds.delete(remoteId);
+      lockQueryActive = false;
+    }
+    updateActivityCount();
+  });
+  void refreshActivityFromLocks();
+  window.addEventListener('focus', () => void refreshActivityFromLocks());
+  document.addEventListener('visibilitychange', () => void refreshActivityFromLocks());
+}
+
+export function hasUnresolvedSiteScan(siteScan: AppState['backup']['siteScan']): boolean {
+  return !!siteScan?.urlStates.some((url) =>
+    ['pending', 'fetching', 'fetched', 'fetch-failed', 'save-failed'].includes(url.status)
+  );
+}
+
+export async function withDashboardActivity<T>(kind: DashboardActivityKind, operation: () => Promise<T>): Promise<T> {
+  const operationId = `${activityPageId}:${++activitySequence}:${kind}`;
+  localActivityIds.add(operationId);
+  updateActivityCount();
+  let announced = false;
+  try {
+    const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+    if (!locks?.request) {
+      if (kind === 'clear-results' || kind === 'clear-logs') {
+        throw new Error('Web Locks are unavailable; clearing is disabled for safety.');
+      }
+      return await operation();
+    }
+    return await locks.request(ACTIVITY_LOCK, { mode: 'exclusive', ifAvailable: true }, async (lock) => {
+      if (!lock) throw new Error('Dashboard is busy with another operation.');
+      activityChannel?.postMessage({ sourceId: activityPageId, operationId, active: true });
+      announced = !!activityChannel;
+      return operation();
+    });
+  } finally {
+    localActivityIds.delete(operationId);
+    lockQueryActive = false;
+    updateActivityCount();
+    if (announced) activityChannel?.postMessage({ sourceId: activityPageId, operationId, active: false });
+    void refreshActivityFromLocks();
+  }
 }
 
 export function getState(): AppState {

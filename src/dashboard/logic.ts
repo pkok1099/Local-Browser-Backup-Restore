@@ -6,7 +6,7 @@
 // surface for the automated test suite — it never logs cookie values or
 // passwords.
 import { TypedError, errMessage, errCode } from '@/lib/util';
-import { newBackupSkeleton, finalizeIntegrity } from '@/lib/format';
+import { newBackupSkeleton, finalizeIntegrity, verifyIntegrity } from '@/lib/format';
 import { encryptBackup } from '@/lib/crypto';
 import { detect, runProbes, getChromeVersion } from '@/lib/capabilities';
 import { collectAll, computeCounts } from '@/lib/collect';
@@ -23,6 +23,8 @@ import {
   type CapsRow,
   type SiteScanStats,
   type UrlState,
+  hasUnresolvedSiteScan,
+  withDashboardActivity,
 } from './store';
 import {
   loadBackupCategories,
@@ -51,6 +53,7 @@ type BackupObject = UnknownRecord & {
   data?: BackupData;
   counts?: Record<string, number | string | undefined>;
   capabilities?: Record<string, CapabilityDetail | undefined>;
+  integrity?: { digest?: string } | null;
   generator?: unknown;
 };
 type SiteDataOptions = UnknownRecord & {
@@ -83,10 +86,16 @@ type ValidationResult = {
 };
 type RestoreOption = {
   enabled: boolean;
+  unavailable?: boolean;
   mode?: 'merge' | 'replace' | 'redownload' | 'metadata-only';
   confirmDestructive?: boolean;
 };
-type RestoreOutcome = { status: string; summary: string; stats?: { notes?: string[] } };
+type RestoreOutcome = {
+  status: string;
+  outcome: 'complete' | 'partial' | 'failed' | 'unavailable' | 'skipped_by_user' | 'not_in_backup';
+  summary: string;
+  stats?: { notes?: string[]; outcomeCounts?: { succeeded: number; failed: number; skipped: number } };
+};
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -270,7 +279,17 @@ export async function saveTextFile(text: string, name: string) {
   }
 }
 
-export async function doBackup({
+export function doBackup(
+  options: {
+    encrypt?: boolean;
+    password?: string | null;
+    collectOptions?: CollectOptions | null;
+  } = {}
+) {
+  return withDashboardActivity('backup', () => doBackupUnlocked(options));
+}
+
+async function doBackupUnlocked({
   encrypt = false,
   password = null,
   collectOptions = null,
@@ -300,14 +319,14 @@ export async function doBackup({
       }));
       appendLog('backup stopped by user; no file written');
       // Keep the partial backup for download (user can download what exists).
-      storeBackupForDownload(backup, encrypt, password);
+      await storeBackupForDownload(backup, encrypt, password);
       return null;
     }
     patchState('backup', (b) => ({ ...b, frac: 0.7, status: 'preparing…' }));
 
     // No auto-download: the result stays in extension storage. The user
     // downloads explicitly via the "Download hasil" button.
-    storeBackupForDownload(backup, encrypt, password);
+    await storeBackupForDownload(backup, encrypt, password);
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
     patchState('backup', (b) => ({
       ...b,
@@ -359,7 +378,7 @@ export async function doBackup({
 
 // ---------------- download on demand (no auto-download) ----------------
 
-// The last backup is kept in memory and (if it fits) in chrome.storage.local.
+// The last backup is kept in memory for the active dashboard page only.
 // Download happens ONLY when the user clicks "Download hasil".
 let lastBackupForDownload: UnknownRecord | null = null;
 let lastBackupMeta: { encrypt: boolean; at: number; isEnvelope?: boolean } | null = null;
@@ -367,26 +386,24 @@ export function isBackupEnvelopeReady(): boolean {
   return !!lastBackupMeta?.isEnvelope;
 }
 
-function storeBackupForDownload(backup: BackupObject, encrypt: boolean, password: string | null) {
-  lastBackupForDownload = backup;
-  lastBackupMeta = { encrypt, at: Date.now() };
-  // If encrypted, pre-build the envelope now (password is available here;
-  // we never store the password itself).
-  if (encrypt && password) {
-    encryptBackup(backup, password)
-      .then((env: unknown) => {
-        lastBackupForDownload = asRecord(env);
-        lastBackupMeta = { encrypt: true, at: Date.now(), isEnvelope: true };
-        updateDownloadInfo();
-      })
-      .catch(() => {});
+async function storeBackupForDownload(backup: BackupObject, encrypt: boolean, password: string | null) {
+  await verifyIntegrity(backup);
+  let payload: UnknownRecord = backup;
+  let meta: { encrypt: boolean; at: number; isEnvelope?: boolean } = { encrypt, at: Date.now() };
+  if (encrypt) {
+    const envelope = asRecord(await encryptBackup(backup, password));
+    const validation = (await validateBackupFile(JSON.stringify(envelope), { password })) as ValidationResult;
+    if (validation.backup.integrity?.digest !== backup.integrity?.digest) {
+      throw new TypedError(
+        'ERR_CHECKSUM_MISMATCH',
+        'Encrypted backup validation did not recover the finalized backup.'
+      );
+    }
+    payload = envelope;
+    meta = { encrypt: true, at: Date.now(), isEnvelope: true };
   }
-  // Best-effort persist to extension storage (may exceed quota for huge backups).
-  try {
-    chrome.storage.local.set({ 'bbr:last-backup': { backup, encrypt, at: Date.now() } }).catch(() => {});
-  } catch (e) {
-    /* ignore */
-  }
+  lastBackupForDownload = payload;
+  lastBackupMeta = meta;
   updateDownloadInfo();
 }
 
@@ -468,7 +485,11 @@ function buildBackupBlob(backup: UnknownRecord, encrypt: boolean): { blob: Blob;
   return { blob: new Blob(parts, { type: 'application/json' }), outName };
 }
 
-export async function downloadBackupResult(): Promise<void> {
+export function downloadBackupResult(): Promise<void> {
+  return withDashboardActivity('download', downloadBackupResultUnlocked);
+}
+
+async function downloadBackupResultUnlocked(): Promise<void> {
   const backup = lastBackupForDownload;
   if (!backup) throw new Error('No backup data available.');
   const meta = lastBackupMeta || { encrypt: false, at: 0 };
@@ -500,7 +521,12 @@ export async function downloadBackupResult(): Promise<void> {
 // Re-run a targeted site-data crawl for the given origins (fetch-failed
 // URLs) and merge the fresh results into the dashboard state. The retry does
 // not touch the main checkpoint (checkpoint: false, resume: false).
-export async function retrySiteDataUrls(urls: string[]): Promise<void> {
+export function retrySiteDataUrls(urls: string[]): Promise<void> {
+  if (!urls.length) return Promise.resolve();
+  return withDashboardActivity('site-data-retry', () => retrySiteDataUrlsUnlocked(urls));
+}
+
+async function retrySiteDataUrlsUnlocked(urls: string[]): Promise<void> {
   if (!urls.length) return;
   const base = (lastSiteDataOpts && lastSiteDataOpts.siteData) || {};
   const scanWindowSize = base.scanWindowSize ?? (await loadSiteDataScanWindow());
@@ -552,7 +578,11 @@ export async function retrySiteDataUrls(urls: string[]): Promise<void> {
 // Re-attempt the checkpoint write for save-failed origins. The data is
 // already in memory (lastSiteDataSection.origins) — it only needs re-saving,
 // never re-fetching.
-export async function retrySiteDataSave(): Promise<boolean> {
+export function retrySiteDataSave(): Promise<boolean> {
+  return withDashboardActivity('site-data-retry', retrySiteDataSaveUnlocked);
+}
+
+async function retrySiteDataSaveUnlocked(): Promise<boolean> {
   const section = lastSiteDataSection;
   if (!section || !section.origins) return false;
   try {
@@ -637,6 +667,76 @@ const CATEGORY_LABELS: Record<string, string> = {
   profile: 'Profile metadata',
 };
 
+const RESTORE_HANDLED_CATEGORIES = new Set([
+  'bookmarks',
+  'history',
+  'tabsWindows',
+  'sessions',
+  'cookies',
+  'downloads',
+  'readingList',
+  'extensionStorage',
+  'installedExtensions',
+  'siteData',
+]);
+
+function countFromData(backup: BackupObject, cat: string): string | undefined {
+  const data = asRecord(backup.data);
+  const section = asRecord(data[cat]);
+  const length = (value: unknown) => (Array.isArray(value) ? String(value.length) : undefined);
+  switch (cat) {
+    case 'bookmarks': {
+      if (!isRecord(section.roots)) return undefined;
+      const roots = asRecord(section.roots);
+      let count = 0;
+      const walk = (nodes: unknown) => {
+        if (!Array.isArray(nodes)) return;
+        for (const value of nodes) {
+          const node = asRecord(value);
+          if (node.type === 'folder') walk(node.children);
+          else count++;
+        }
+      };
+      for (const root of Object.values(roots)) walk(asRecord(root).children);
+      return String(count);
+    }
+    case 'history':
+      return length(section.items);
+    case 'tabsWindows': {
+      if (!Array.isArray(section.windows)) return undefined;
+      return String(
+        section.windows.reduce((count, value) => {
+          const tabs = asRecord(value).tabs;
+          return count + (Array.isArray(tabs) ? tabs.length : 0);
+        }, 0)
+      );
+    }
+    case 'tabGroups':
+      return length(asRecord(data.tabsWindows).tabGroups);
+    case 'sessions':
+      return length(section.recentlyClosed);
+    case 'cookies':
+      return length(section.cookies);
+    case 'downloads':
+    case 'installedExtensions':
+      return length(section.items);
+    case 'readingList':
+      return length(section.entries);
+    case 'extensionPermissions':
+      return Array.isArray(section.permissions) && Array.isArray(section.origins)
+        ? String(section.permissions.length + section.origins.length)
+        : undefined;
+    case 'extensionStorage':
+      return isRecord(data.extensionStorage) ? String(Object.keys(asRecord(section.local)).length) : undefined;
+    case 'profile':
+      return isRecord(data.profile) ? '1' : undefined;
+    case 'siteData':
+      return Object.hasOwn(section, 'origins') ? `${Object.keys(asRecord(section.origins)).length} origins` : undefined;
+    default:
+      return Array.isArray(data[cat]) ? String((data[cat] as unknown[]).length) : length(section.items);
+  }
+}
+
 function countFor(backup: BackupObject, cat: string): string | undefined {
   const c = backup.counts || {};
   const countText = (value: unknown) =>
@@ -663,29 +763,36 @@ function countFor(backup: BackupObject, cat: string): string | undefined {
     case 'siteData':
       return c.siteDataOrigins !== undefined ? `${c.siteDataOrigins} origins` : undefined;
     default:
-      return undefined;
+      return countText(c[cat]);
   }
 }
 
 function presentCategories(backup: BackupObject): Array<[string, string]> {
-  const data = backup.data || {};
+  const data = asRecord(backup.data);
   const cats: Array<[string, string]> = [];
   for (const [cat, label] of Object.entries(CATEGORY_LABELS)) {
     if (cat === 'tabGroups') {
-      if (data.tabsWindows && data.tabsWindows.tabGroups) cats.push([cat, label]);
+      if (Array.isArray(asRecord(data.tabsWindows).tabGroups)) cats.push([cat, label]);
       continue;
     }
-    if (cat === 'extensionPermissions' || cat === 'profile') continue; // informational, no restore action
-    if (data[cat]) cats.push([cat, label]);
+    if (Object.hasOwn(data, cat)) cats.push([cat, label]);
   }
+  for (const cat of Object.keys(data)) if (!Object.hasOwn(CATEGORY_LABELS, cat)) cats.push([cat, cat]);
   return cats;
 }
 
-let pendingRestore: { validation: ValidationResult; text: string; options: Record<string, unknown> } | null = null;
+let pendingRestore: {
+  validation: ValidationResult;
+  text: string;
+  options: Record<string, unknown>;
+  targetCapabilities: ReturnType<typeof detect>;
+} | null = null;
 
-export async function handleFileSelected(file: File) {
-  const text = await file.text();
-  await openRestoreFlow(text);
+export function handleFileSelected(file: File): Promise<void> {
+  return withDashboardActivity('restore', async () => {
+    const text = await file.text();
+    await openRestoreFlow(text);
+  });
 }
 
 export async function openRestoreFlow(text: string, presetPassword: string | null = null) {
@@ -707,7 +814,7 @@ export async function openRestoreFlow(text: string, presetPassword: string | nul
       }
     }
     if (!validation) return;
-    pendingRestore = { validation, text, options: {} };
+    pendingRestore = { validation, text, options: {}, targetCapabilities: detect() };
     renderRestoreSummary();
   } catch (e: unknown) {
     const code = errCode(e) || 'ERROR';
@@ -722,24 +829,38 @@ export async function openRestoreFlow(text: string, presetPassword: string | nul
 }
 
 function renderRestoreSummary() {
-  const { validation } = pendingRestore!;
+  const { validation, targetCapabilities } = pendingRestore!;
   const backup = validation.backup;
-  const caps = backup.capabilities || {};
+  const archivedCapabilities = backup.capabilities || {};
 
+  const warnings: string[] = [...(validation.warnings || [])];
   const rows: RestoreRow[] = [];
   for (const [cat, label] of presentCategories(backup)) {
-    const n = countFor(backup, cat);
-    const capCat = cat === 'tabGroups' ? caps.tabGroups : caps[cat];
-    const r = capCat?.canRestore ?? false;
+    const n = countFromData(backup, cat) ?? countFor(backup, cat);
+    const currentCapability = asRecord(targetCapabilities)[cat] as CapabilityDetail | undefined;
+    const hasRestoreHandler = RESTORE_HANDLED_CATEGORIES.has(cat) || cat === 'tabGroups';
+    const targetRestore = isRestoreCapability(currentCapability?.canRestore) ? currentCapability.canRestore : false;
+    const r = hasRestoreHandler ? targetRestore : false;
+    const archivedRestore = archivedCapabilities[cat]?.canRestore;
+    if (isRestoreCapability(archivedRestore) && archivedRestore !== targetRestore) {
+      warnings.push(
+        `${label} restore capability in the backup differs from this browser; showing current browser support.`
+      );
+    }
     let checked: boolean, disabled: boolean, extraNote: string | undefined;
     if (cat === 'tabGroups') {
       // Groups are restored together with tabs & windows (same API surface).
-      checked = true;
+      checked = r !== false;
       disabled = true;
-      extraNote = 'Restored together with Tabs & windows';
+      extraNote = r !== false ? 'Restored together with Tabs & windows' : 'This browser cannot restore tab groups.';
+    } else if (!RESTORE_HANDLED_CATEGORIES.has(cat)) {
+      checked = false;
+      disabled = true;
+      extraNote = 'Informational only; no restore operation is available for this category.';
     } else if (!r) {
       checked = false;
       disabled = true;
+      if (cat === 'installedExtensions') extraNote = 'Manual reinstall from this backup’s extension checklist.';
     } else if (cat === 'downloads') {
       checked = false;
       disabled = false; // opt-in only
@@ -751,17 +872,14 @@ function renderRestoreSummary() {
       cat,
       label,
       n: n !== undefined ? String(n) : '—',
-      restore: isRestoreCapability(r) ? r : false,
+      restore: r,
       checked,
       disabled,
       ...(extraNote !== undefined ? { note: extraNote } : {}),
     });
   }
 
-  const warnings: string[] = [...(validation.warnings || [])];
   const notes: string[] = [];
-  if (caps.history) notes.push('History is preserved in the backup but cannot be restored (no write API).');
-  if (caps.installedExtensions) notes.push('Installed extensions: restore = manual reinstall from the checklist.');
 
   patchState('restore', (r) => ({
     ...r,
@@ -811,63 +929,80 @@ export function cancelRestoreFlow() {
   appendLog('restore cancelled by user');
 }
 
-export async function onRestoreGo() {
-  if (!pendingRestore) return;
-  const { validation } = pendingRestore;
-  const backup = validation.backup;
-  const state = getState();
-  const summary = state.restore.summary;
-  const options: Record<string, RestoreOption> = {};
-  if (summary) {
-    for (const row of summary.rows) {
-      options[row.cat] = { enabled: row.checked };
-    }
-    if (options.bookmarks?.enabled) {
-      options.bookmarks = {
-        enabled: true,
-        mode: summary.options.bm ? 'replace' : 'merge',
-        confirmDestructive: summary.options.bm,
-      };
-    }
-    if (options.siteData?.enabled) {
-      options.siteData = {
-        enabled: true,
-        mode: summary.options.sd ? 'replace' : 'merge',
-        confirmDestructive: summary.options.sd,
-      };
-    }
-    if (options.downloads) {
-      options.downloads = { enabled: summary.options.dl, mode: summary.options.dl ? 'redownload' : 'metadata-only' };
-    }
-  }
-  patchState('restore', (r) => ({ ...r, progress: { visible: true, frac: 0.05, status: 'starting…' }, summary: null }));
-  const t0 = performance.now();
-  const results = (await restoreAll(backup, options, (m: string) =>
-    patchState('restore', (r) => ({ ...r, progress: { ...r.progress, status: m } }))
-  )) as Record<string, RestoreOutcome>;
-  const secs = ((performance.now() - t0) / 1000).toFixed(1);
-  patchState('restore', (r) => ({
-    ...r,
-    progress: { ...r.progress, frac: 1, status: `Restore finished in ${secs}s.` },
-  }));
+export function onRestoreGo(): Promise<void> {
+  return withDashboardActivity('restore', onRestoreGoUnlocked);
+}
 
-  const lines: ResultLine[] = [];
-  for (const [cat, res] of Object.entries(results)) {
-    const cls = res.status === 'ok' ? 'ok' : res.status === 'unsupported' ? 'warn' : 'err';
-    lines.push({
-      label: CATEGORY_LABELS[cat] || cat,
-      cls,
-      summary: res.summary,
-      notes: (res.stats && res.stats.notes) || [],
-    });
+async function onRestoreGoUnlocked(): Promise<void> {
+  const pending = pendingRestore;
+  if (!pending) return;
+  try {
+    const { validation } = pending;
+    const backup = validation.backup;
+    const state = getState();
+    const summary = state.restore.summary;
+    const options: Record<string, RestoreOption> = {};
+    if (summary) {
+      for (const row of summary.rows) {
+        options[row.cat] = { enabled: row.checked, unavailable: row.disabled && row.restore === false };
+      }
+      if (options.bookmarks?.enabled) {
+        options.bookmarks = {
+          enabled: true,
+          mode: summary.options.bm ? 'replace' : 'merge',
+          confirmDestructive: summary.options.bm,
+        };
+      }
+      if (options.siteData?.enabled) {
+        options.siteData = {
+          enabled: true,
+          mode: summary.options.sd ? 'replace' : 'merge',
+          confirmDestructive: summary.options.sd,
+        };
+      }
+      if (options.downloads) {
+        options.downloads = { enabled: summary.options.dl, mode: summary.options.dl ? 'redownload' : 'metadata-only' };
+      }
+    }
+    patchState('restore', (r) => ({
+      ...r,
+      progress: { visible: true, frac: 0.05, status: 'starting…' },
+      summary: null,
+    }));
+    const t0 = performance.now();
+    const results = (await restoreAll(backup, options, (m: string) =>
+      patchState('restore', (r) => ({ ...r, progress: { ...r.progress, status: m } }))
+    )) as Record<string, RestoreOutcome>;
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    patchState('restore', (r) => ({
+      ...r,
+      progress: { ...r.progress, frac: 1, status: `Restore finished in ${secs}s.` },
+    }));
+
+    const lines: ResultLine[] = [];
+    for (const [cat, res] of Object.entries(results)) {
+      lines.push({
+        label: CATEGORY_LABELS[cat] || cat,
+        outcome: res.outcome,
+        ...(res.stats?.outcomeCounts ? { outcomeCounts: res.stats.outcomeCounts } : {}),
+        summary: res.summary,
+        notes: (res.stats && res.stats.notes) || [],
+      });
+    }
+    patchState('restore', (r) => ({ ...r, results: lines }));
+    appendLog('restore finished');
+  } finally {
+    if (pendingRestore === pending) pendingRestore = null;
   }
-  patchState('restore', (r) => ({ ...r, results: lines }));
-  appendLog('restore finished');
 }
 
 // ---------------- capabilities ----------------
 
-export async function showCapabilities() {
+export function showCapabilities(): Promise<void> {
+  return withDashboardActivity('probes', showCapabilitiesUnlocked);
+}
+
+async function showCapabilitiesUnlocked(): Promise<void> {
   patchState('caps', (c) => ({ ...c, visible: true }));
   const rows: CapsRow[] = [];
   for (const [cat, rawCapability] of Object.entries(asRecord(detect()))) {
@@ -891,5 +1026,43 @@ export async function showCapabilities() {
     patchState('caps', (c) => ({ ...c, probes: JSON.stringify(probes, null, 2) }));
   } catch (e) {
     patchState('caps', (c) => ({ ...c, probes: 'probe error: ' + errMessage(e) }));
+  }
+}
+
+export async function clearBackupResults(): Promise<boolean> {
+  try {
+    return await withDashboardActivity('clear-results', async () => {
+      const stored = await chrome.storage.local.get('bbr:site-data-checkpoint');
+      if (Object.hasOwn(stored, 'bbr:site-data-checkpoint') || hasUnresolvedSiteScan(getState().backup.siteScan)) {
+        return false;
+      }
+
+      await chrome.storage.local.remove('bbr:last-backup');
+      if (!getState().restore.summary) pendingRestore = null;
+      lastBackupForDownload = null;
+      lastBackupMeta = null;
+      lastSiteDataOpts = null;
+      lastSiteDataSection = null;
+      patchState('backup', (backup) => ({
+        ...backup,
+        visible: false,
+        running: false,
+        status: 'No backup results.',
+        frac: 0,
+        summary: [],
+        foldersNote: null,
+        siteScan: null,
+        downloadInfo: { ready: false, siteCount: 0, estBytes: 0 },
+      }));
+      patchState('restore', (restore) => ({
+        ...restore,
+        pickError: null,
+        progress: { visible: false, frac: 0, status: 'starting…' },
+        results: [],
+      }));
+      return true;
+    });
+  } catch {
+    return false;
   }
 }

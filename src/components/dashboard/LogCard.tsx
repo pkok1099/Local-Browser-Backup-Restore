@@ -6,12 +6,21 @@ import { useEffect, useRef } from 'react';
 export function LogCard() {
   const state = useApp();
   const ref = useRef<HTMLPreElement>(null);
+  const previousLinesRef = useRef(state.logLines);
+  const wasAtBottomRef = useRef(true);
 
-  // Auto-scroll to the newest line, like the original log element.
   useEffect(() => {
     const el = ref.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [state.logLines.length]);
+    if (!el) return;
+    const hasNewOutput = previousLinesRef.current !== state.logLines;
+    previousLinesRef.current = state.logLines;
+    if (!hasNewOutput) return;
+    if (!state.logLines.length) {
+      wasAtBottomRef.current = true;
+      return;
+    }
+    if (wasAtBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [state.logLines]);
 
   return (
     <Card>
@@ -25,6 +34,10 @@ export function LogCard() {
         <pre
           id="log"
           ref={ref}
+          onScroll={() => {
+            const el = ref.current;
+            if (el) wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
+          }}
           className="bg-slate-950 text-slate-200 max-h-[260px] overflow-auto rounded-lg p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap max-sm:max-h-[40vh] [overflow-wrap:anywhere]"
         >
           {state.logLines.length ? state.logLines.join('\n') : '(no output yet)'}
