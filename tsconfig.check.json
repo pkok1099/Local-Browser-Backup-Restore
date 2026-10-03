@@ -7,6 +7,7 @@
     "src/**/*.ts",
     "src/**/*.tsx",
     "src/**/*.d.ts",
+    "tests/api-operations.types.ts",
     "wxt.config.ts"
   ]
 }
