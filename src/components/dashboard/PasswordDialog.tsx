@@ -31,7 +31,10 @@ export function PasswordDialog() {
     <Dialog
       open={password.open}
       onOpenChange={(open) => {
-        if (!open) void import('@/dashboard/logic').then(({ closePassword }) => closePassword(null));
+        if (!open)
+          void import('@/dashboard/logic').then(({ closePassword }) =>
+            closePassword(null)
+          );
       }}
     >
       <DialogContent id="section-password" showCloseButton={false}>
@@ -42,7 +45,7 @@ export function PasswordDialog() {
           </DialogTitle>
           <DialogDescription>
             {isNew
-              ? 'The password never leaves this machine, is never stored and never logged. If you lose it, the backup cannot be recovered. Minimum 8 characters recommended.'
+              ? 'The password never leaves this machine and is never logged. It is kept only in memory (cleared when the browser closes) while "Keep the encryption password in memory for scheduled runs" is enabled — otherwise it is not stored at all. If you lose it, the backup cannot be recovered. Minimum 8 characters recommended.'
               : 'Enter the password this backup was encrypted with.'}
           </DialogDescription>
         </DialogHeader>
@@ -77,14 +80,22 @@ export function PasswordDialog() {
         <DialogFooter>
           <Button
             id="pw-ok"
-            onClick={() => void import('@/dashboard/logic').then(({ submitPassword }) => submitPassword(pw1, pw2))}
+            onClick={() =>
+              void import('@/dashboard/logic').then(({ submitPassword }) =>
+                submitPassword(pw1, pw2)
+              )
+            }
           >
             Continue
           </Button>
           <Button
             id="pw-cancel"
             variant="outline"
-            onClick={() => void import('@/dashboard/logic').then(({ closePassword }) => closePassword(null))}
+            onClick={() =>
+              void import('@/dashboard/logic').then(({ closePassword }) =>
+                closePassword(null)
+              )
+            }
           >
             Cancel
           </Button>

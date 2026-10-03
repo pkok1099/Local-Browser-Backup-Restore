@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Globe2, RefreshCw, Search } from 'lucide-react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { discoverOrigins } from '@/lib/sitedata';
-import { filterSiteDataOrigins, getSelectedSiteDataOrigins } from '@/lib/site-data-selection';
+import {
+  filterSiteDataOrigins,
+  getSelectedSiteDataOrigins,
+} from '@/lib/site-data-selection';
 import {
   loadIncludedSiteOrigins,
   saveIncludedSiteOrigins,
@@ -33,7 +42,9 @@ export function SiteDataSelectionCard() {
   const [included, setIncluded] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
-  const [scanWindow, setScanWindow] = useState<number>(SITE_DATA_SCAN_WINDOW_DEFAULT);
+  const [scanWindow, setScanWindow] = useState<number>(
+    SITE_DATA_SCAN_WINDOW_DEFAULT
+  );
 
   async function refresh() {
     setLoading(true);
@@ -82,8 +93,9 @@ export function SiteDataSelectionCard() {
           Websites included in website-data backup
         </CardTitle>
         <CardDescription>
-          Select which discovered sites to keep. Sites are found from open tabs, history, bookmarks, reading list and
-          cookie domains. This only filters website data.
+          Select which discovered sites to keep. Sites are found from open tabs,
+          history, bookmarks, reading list and cookie domains. This only filters
+          website data.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
@@ -99,13 +111,20 @@ export function SiteDataSelectionCard() {
               placeholder="Search websites…"
             />
           </div>
-          <Button id="site-data-refresh" variant="outline" onClick={() => void refresh()} disabled={loading}>
+          <Button
+            id="site-data-refresh"
+            variant="outline"
+            onClick={() => void refresh()}
+            disabled={loading}
+          >
             <RefreshCw className="size-4" /> Refresh list
           </Button>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <strong id="site-data-count">
-            {loading ? 'Finding websites…' : `${origins.length} websites found · ${selected.length} selected`}
+            {loading
+              ? 'Finding websites…'
+              : `${origins.length} websites found · ${selected.length} selected`}
           </strong>
           <Button
             id="site-data-select-all"
@@ -127,7 +146,10 @@ export function SiteDataSelectionCard() {
           </Button>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <label htmlFor="site-data-scan-window" className="text-muted-foreground">
+          <label
+            htmlFor="site-data-scan-window"
+            className="text-muted-foreground"
+          >
             Max tabs open during scan:
           </label>
           <Input
@@ -143,7 +165,9 @@ export function SiteDataSelectionCard() {
                 SITE_DATA_SCAN_WINDOW_MAX,
                 Math.max(
                   SITE_DATA_SCAN_WINDOW_MIN,
-                  Math.floor(Number(event.target.value) || SITE_DATA_SCAN_WINDOW_DEFAULT)
+                  Math.floor(
+                    Number(event.target.value) || SITE_DATA_SCAN_WINDOW_DEFAULT
+                  )
                 )
               );
               setScanWindow(v);
@@ -151,7 +175,8 @@ export function SiteDataSelectionCard() {
             }}
           />
           <span className="text-muted-foreground text-xs">
-            ({SITE_DATA_SCAN_WINDOW_MIN}–{SITE_DATA_SCAN_WINDOW_MAX}; lower if the browser slows down)
+            ({SITE_DATA_SCAN_WINDOW_MIN}–{SITE_DATA_SCAN_WINDOW_MAX}; lower if
+            the browser slows down)
           </span>
         </div>
         <div
@@ -161,11 +186,16 @@ export function SiteDataSelectionCard() {
         >
           {!loading && visible.length === 0 && (
             <p className="px-3 py-4 text-sm text-muted-foreground">
-              {origins.length ? 'No websites match this search.' : 'No websites found. Use Refresh list to scan again.'}
+              {origins.length
+                ? 'No websites match this search.'
+                : 'No websites found. Use Refresh list to scan again.'}
             </p>
           )}
           {visible.map(({ origin, sources }) => (
-            <label key={origin} className="flex min-h-11 items-start gap-3 rounded-md px-2 py-2 hover:bg-muted/50">
+            <label
+              key={origin}
+              className="flex min-h-11 items-start gap-3 rounded-md px-2 py-2 hover:bg-muted/50"
+            >
               <Checkbox
                 checked={included.has(origin)}
                 onCheckedChange={(checked) => toggle(origin, checked)}
@@ -174,7 +204,9 @@ export function SiteDataSelectionCard() {
               <span className="min-w-0 flex-1">
                 <span className="block break-all text-sm">{origin}</span>
                 <span className="block text-xs text-muted-foreground">
-                  {sources.map((source) => SOURCE_LABELS[source] || source).join(' · ')}
+                  {sources
+                    .map((source) => SOURCE_LABELS[source] || source)
+                    .join(' · ')}
                 </span>
               </span>
             </label>

@@ -6,7 +6,14 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { useApp, type ResultLine } from '@/dashboard/store';
 import {
   handleFileSelected,
@@ -31,7 +38,10 @@ function OutcomeBadge({ line }: { line: ResultLine }) {
     skipped_by_user: 'Skipped by user',
     not_in_backup: 'Absent from backup',
   };
-  const variants: Record<ResultLine['outcome'], 'success' | 'warning' | 'danger' | 'outline' | 'secondary'> = {
+  const variants: Record<
+    ResultLine['outcome'],
+    'success' | 'warning' | 'danger' | 'outline' | 'secondary'
+  > = {
     complete: 'success',
     partial: 'warning',
     failed: 'danger',
@@ -49,7 +59,9 @@ function OutcomeBadge({ line }: { line: ResultLine }) {
           : 'text-muted-foreground';
   const counts = line.outcomeCounts;
   const countText =
-    line.outcome === 'partial' && counts ? ` (${counts.succeeded} succeeded, ${counts.failed} failed)` : '';
+    line.outcome === 'partial' && counts
+      ? ` (${counts.succeeded} succeeded, ${counts.failed} failed)`
+      : '';
   return (
     <div className={`flex flex-wrap items-center gap-2 text-sm ${color}`}>
       <span>
@@ -79,26 +91,36 @@ export function RestoreCard() {
       <CardContent className="grid gap-3">
         {!restore.summary && (
           <div className="grid gap-2">
-            {restore.pickError && <div className="text-destructive text-sm">{restore.pickError}</div>}
-            <p className="text-sm">Select a backup file (.json or encrypted .enc.json):</p>
+            {restore.pickError && (
+              <div className="text-destructive text-sm">
+                {restore.pickError}
+              </div>
+            )}
+            <p className="text-sm">
+              Select a backup file (.json or encrypted .enc.json):
+            </p>
             <Input
               key={restore.fileKey}
               id="restore-file"
               type="file"
               accept=".json,.enc,application/json"
               onChange={(ev) => {
-                if (ev.target.files && ev.target.files[0]) void handleFileSelected(ev.target.files[0]);
+                if (ev.target.files && ev.target.files[0])
+                  void handleFileSelected(ev.target.files[0]);
               }}
             />
             <p className="text-muted-foreground text-xs">
-              Everything happens locally — the file is parsed in this page, never uploaded.
+              Everything happens locally — the file is parsed in this page,
+              never uploaded.
             </p>
           </div>
         )}
 
         {restore.summary && !restore.progress.visible && (
           <div className="grid gap-3">
-            <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Backup contains</h3>
+            <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
+              Backup contains
+            </h3>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -113,7 +135,11 @@ export function RestoreCard() {
                   <TableRow key={row.cat} title={row.note}>
                     <TableCell className="font-medium">
                       <div>{row.label}</div>
-                      {row.note && <div className="text-muted-foreground text-xs font-normal">{row.note}</div>}
+                      {row.note && (
+                        <div className="text-muted-foreground text-xs font-normal">
+                          {row.note}
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell>{row.n}</TableCell>
                     <TableCell>
@@ -124,7 +150,9 @@ export function RestoreCard() {
                         data-cat={row.cat}
                         checked={row.checked}
                         disabled={row.disabled}
-                        onCheckedChange={(v) => toggleRestoreRow(row.cat, v === true)}
+                        onCheckedChange={(v) =>
+                          toggleRestoreRow(row.cat, v === true)
+                        }
                         aria-label={`Include ${row.label}`}
                       />
                     </TableCell>
@@ -135,10 +163,15 @@ export function RestoreCard() {
 
             <div className="grid gap-1">
               {restore.summary.encryptedNote && (
-                <div className="text-sm text-emerald-700 dark:text-emerald-400">{restore.summary.encryptedNote}</div>
+                <div className="text-sm text-emerald-700 dark:text-emerald-400">
+                  {restore.summary.encryptedNote}
+                </div>
               )}
               {restore.summary.warnings.map((w) => (
-                <div key={w} className="text-sm text-amber-700 dark:text-amber-400">
+                <div
+                  key={w}
+                  className="text-sm text-amber-700 dark:text-amber-400"
+                >
                   Warning: {w}
                 </div>
               ))}
@@ -151,7 +184,9 @@ export function RestoreCard() {
               )}
             </div>
 
-            <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Restore options</h3>
+            <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
+              Restore options
+            </h3>
             <div className="grid gap-2">
               <Label htmlFor="opt-bm-replace" className="items-start">
                 <Checkbox
@@ -161,8 +196,8 @@ export function RestoreCard() {
                   className="mt-0.5"
                 />
                 <span className="text-sm">
-                  Bookmarks: <b>replace</b> existing Bookmarks bar &amp; Other bookmarks instead of merging
-                  (destructive!)
+                  Bookmarks: <b>replace</b> existing Bookmarks bar &amp; Other
+                  bookmarks instead of merging (destructive!)
                 </span>
               </Label>
               <Label htmlFor="opt-sd-replace" className="items-start">
@@ -173,8 +208,24 @@ export function RestoreCard() {
                   className="mt-0.5"
                 />
                 <span className="text-sm">
-                  Website data: <b>replace</b> — wipe each origin's site storage before restoring (destructive! default
-                  is a non-destructive merge)
+                  Website data: <b>replace</b> — wipe each origin's site storage
+                  before restoring (destructive! default is a non-destructive
+                  merge)
+                </span>
+              </Label>
+              <Label htmlFor="opt-sd-live" className="items-start">
+                <Checkbox
+                  id="opt-sd-live"
+                  checked={restore.summary.options.sdLive}
+                  onCheckedChange={(v) =>
+                    setRestoreOption('sdLive', v === true)
+                  }
+                  className="mt-0.5"
+                />
+                <span className="text-sm">
+                  Website data: write partitioned data{' '}
+                  <b>into currently open tabs</b> (off by default — the data
+                  stays in the backup with a note instead)
                 </span>
               </Label>
               <Label htmlFor="opt-dl-redownload" className="items-start">
@@ -185,8 +236,8 @@ export function RestoreCard() {
                   className="mt-0.5"
                 />
                 <span className="text-sm">
-                  Downloads: attempt to re-download completed items from their source URLs (network required; off by
-                  default)
+                  Downloads: attempt to re-download completed items from their
+                  source URLs (network required; off by default)
                 </span>
               </Label>
             </div>
@@ -195,7 +246,11 @@ export function RestoreCard() {
               <Button id="restore-go" onClick={() => void onRestoreGo()}>
                 Restore
               </Button>
-              <Button id="restore-cancel" variant="outline" onClick={cancelRestoreFlow}>
+              <Button
+                id="restore-cancel"
+                variant="outline"
+                onClick={cancelRestoreFlow}
+              >
                 Cancel
               </Button>
             </div>
@@ -204,7 +259,12 @@ export function RestoreCard() {
 
         {restore.progress.visible && (
           <div className="grid gap-2">
-            <Progress value={Math.max(2, Math.min(100, Math.round(restore.progress.frac * 100)))} />
+            <Progress
+              value={Math.max(
+                2,
+                Math.min(100, Math.round(restore.progress.frac * 100))
+              )}
+            />
             <div id="restore-status" className="text-muted-foreground text-xs">
               {restore.progress.status}
             </div>
@@ -213,7 +273,9 @@ export function RestoreCard() {
 
         {restore.results.length > 0 && (
           <div className="grid gap-1">
-            <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Restore results</h3>
+            <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
+              Restore results
+            </h3>
             {restore.results.map((line) => (
               <div key={line.label} className="grid gap-0.5">
                 <OutcomeBadge line={line} />

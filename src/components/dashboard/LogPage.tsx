@@ -11,7 +11,9 @@ export default function LogPage() {
   useEffect(() => {
     markSiteLogSeen();
   }, []);
-  const security = state.logLines.filter((l) => /SAFETY VIOLATION|ABORTED|STOPPED|quota|REFUSED/i.test(l));
+  const security = state.logLines.filter((l) =>
+    /SAFETY VIOLATION|ABORTED|STOPPED|quota|REFUSED/i.test(l)
+  );
   return (
     <>
       <CrawlStatusBar />

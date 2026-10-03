@@ -36,11 +36,15 @@ export function LogCard() {
           ref={ref}
           onScroll={() => {
             const el = ref.current;
-            if (el) wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
+            if (el)
+              wasAtBottomRef.current =
+                el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
           }}
           className="bg-slate-950 text-slate-200 max-h-[260px] overflow-auto rounded-lg p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap max-sm:max-h-[40vh] [overflow-wrap:anywhere]"
         >
-          {state.logLines.length ? state.logLines.join('\n') : '(no output yet)'}
+          {state.logLines.length
+            ? state.logLines.join('\n')
+            : '(no output yet)'}
         </pre>
       </CardContent>
     </Card>

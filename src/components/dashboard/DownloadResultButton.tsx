@@ -10,7 +10,11 @@ export function DownloadResultButton() {
   const state = useApp();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const info = state.backup.downloadInfo || { ready: false, siteCount: 0, estBytes: 0 };
+  const info = state.backup.downloadInfo || {
+    ready: false,
+    siteCount: 0,
+    estBytes: 0,
+  };
 
   const onClick = async () => {
     setBusy(true);
@@ -34,7 +38,11 @@ export function DownloadResultButton() {
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Button size="sm" onClick={() => void onClick()} disabled={!info.ready || busy}>
+      <Button
+        size="sm"
+        onClick={() => void onClick()}
+        disabled={!info.ready || busy}
+      >
         {busy ? 'Menyiapkan…' : 'Download hasil'}
       </Button>
       {info.ready ? (
@@ -42,9 +50,13 @@ export function DownloadResultButton() {
           {info.siteCount} situs · perkiraan {sizeStr}
         </span>
       ) : (
-        <span className="text-muted-foreground text-xs">Belum ada data untuk diunduh.</span>
+        <span className="text-muted-foreground text-xs">
+          Belum ada data untuk diunduh.
+        </span>
       )}
-      {error && <span className="text-xs text-red-600 dark:text-red-400">{error}</span>}
+      {error && (
+        <span className="text-xs text-red-600 dark:text-red-400">{error}</span>
+      )}
     </div>
   );
 }

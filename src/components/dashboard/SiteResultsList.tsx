@@ -13,7 +13,10 @@ const STATUS_LABEL: Record<UrlStatus, string> = {
   skipped: 'dilewati',
 };
 
-const STATUS_VARIANT: Record<UrlStatus, 'default' | 'success' | 'warning' | 'danger'> = {
+const STATUS_VARIANT: Record<
+  UrlStatus,
+  'default' | 'success' | 'warning' | 'danger'
+> = {
   pending: 'default',
   fetching: 'default',
   fetched: 'warning',
@@ -42,7 +45,9 @@ export function SiteResultsList({ urlStates }: { urlStates: UrlState[] }) {
 
   if (!urlStates.length) {
     return (
-      <p className="text-muted-foreground text-sm">Belum ada hasil — jalankan backup dengan kategori website data.</p>
+      <p className="text-muted-foreground text-sm">
+        Belum ada hasil — jalankan backup dengan kategori website data.
+      </p>
     );
   }
 
@@ -77,18 +82,34 @@ export function SiteResultsList({ urlStates }: { urlStates: UrlState[] }) {
       </div>
       <div className="grid gap-1.5">
         {filtered.map((u) => (
-          <div key={u.origin} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+          <div
+            key={u.origin}
+            className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm"
+          >
             <span className="min-w-0 flex-1 break-all">{u.origin}</span>
-            <Badge variant={STATUS_VARIANT[u.status]}>{STATUS_LABEL[u.status]}</Badge>
-            {u.attempts > 1 && <span className="text-muted-foreground text-xs">{u.attempts}× upaya</span>}
+            <Badge variant={STATUS_VARIANT[u.status]}>
+              {STATUS_LABEL[u.status]}
+            </Badge>
+            {u.attempts > 1 && (
+              <span className="text-muted-foreground text-xs">
+                {u.attempts}× upaya
+              </span>
+            )}
             {u.error && (
-              <span className="text-muted-foreground w-full truncate text-xs" title={u.error}>
+              <span
+                className="text-muted-foreground w-full truncate text-xs"
+                title={u.error}
+              >
                 {u.error}
               </span>
             )}
           </div>
         ))}
-        {filtered.length === 0 && <p className="text-muted-foreground text-sm">Tidak ada situs yang cocok.</p>}
+        {filtered.length === 0 && (
+          <p className="text-muted-foreground text-sm">
+            Tidak ada situs yang cocok.
+          </p>
+        )}
       </div>
     </div>
   );

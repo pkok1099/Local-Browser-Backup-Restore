@@ -4,7 +4,11 @@ import { Button } from '@/components/ui/button';
 import { setTheme, useTheme, type Theme } from '@/dashboard/theme';
 
 const ORDER: Theme[] = ['light', 'dark', 'system'];
-const LABEL: Record<Theme, string> = { light: 'Light', dark: 'Dark', system: 'System' };
+const LABEL: Record<Theme, string> = {
+  light: 'Light',
+  dark: 'Dark',
+  system: 'System',
+};
 
 export function ThemeToggle() {
   const theme = useTheme();
