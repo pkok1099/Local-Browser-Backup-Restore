@@ -1,14 +1,28 @@
-# Panduan Agen
+# Agent Guide
 
-## Alur kerja
-- Pahami struktur, alur terkait, kontrak, dokumentasi, dan tes sebelum merancang perubahan; petakan komponen serta dependensi sebelum perubahan arsitektur.
-- Skill lengkap tersedia di `docs/agent-skills/`. Baca salinan yang relevan dan, bila tersedia, panggil skill terpasang yang sesuai. Skill berlaku berdasarkan pemicunya; jangan menganggap semuanya berjalan otomatis.
-- Ikuti alur Superpowers yang sesuai: mulai dengan `using-superpowers`; gunakan `brainstorming` untuk desain/perubahan kreatif; `writing-plans` untuk kebutuhan multi-langkah; TDD untuk fitur, perbaikan, dan perubahan perilaku; `subagent-driven-development` atau `executing-plans` untuk pelaksanaan; `systematic-debugging` saat terjadi kegagalan; skill review saat memberi atau menerima review; dan `verification-before-completion` sebelum menyatakan hasil.
-- Jaga perubahan sekecil mungkin, pertahankan perilaku dan tes, jangan melemahkan atau menghapus tes, dan jangan menambah dependensi tanpa kebutuhan nyata.
+## Core Architecture & MV3 Execution
+- **WXT + React + Tailwind**: Build output is strictly `.output/chrome-mv3/` (unpacked extension root).
+- **Execution Location**: All backup, restore, capability probing, and cloud operations run inside the **dashboard page tab** (`src/entrypoints/dashboard/`), NOT in the service worker (`src/entrypoints/background.ts`). Service workers are idle-killed by Chrome MV3 during long operations.
+- **Core Logic & State Bridge**: Business logic is pure JS in `src/lib/*.js` (`collect.js`, `restore.js`, `sitedata.js`, `cloud.js`, `crypto.js`). UI state bridges logic via `src/dashboard/store.ts` and `logic.ts`. `src/dashboard/api.ts` exposes `window.__api` for test automation.
 
-## Keamanan dan kompatibilitas
-- Pertahankan keselamatan backup/restore Chrome MV3 dan kontrak kompatibilitas rilis. Kontrak khusus rilis hanya boleh diubah berdasarkan desain atau spesifikasi yang telah disetujui.
-- Jangan menghapus data browser/pengguna atau melakukan pembersihan storage yang luas.
+## Developer Commands & Order
+- **Verification Order**: Run `npm run check` then `npm test`.
+- **Typecheck Prerequisite**: `npm run typecheck` uses `tsconfig.check.json` and requires generated WXT types. Run `npx wxt prepare` first if `.wxt` directory is missing or after manifest changes.
+- **Single Node Test**: `node tests/<test-file>.mjs` (e.g., `node tests/sitedata-tab-cleanup.mjs`).
+- **E2E Tests**: Require built extension (`npm run build`).
+  - Headless run: `CI_HEADLESS=1 npm run test:e2e`
+  - With Xvfb: `xvfb-run -a npm run test:e2e`
+  - Dashboard UI E2E: `xvfb-run -a npm run test:ui`
+- **Quality Checks**:
+  - `npm run check` runs `lint`, `typecheck`, and `format:check`.
+  - `npm run cycles` checks for circular dependencies via `madge`.
+  - `npm run knip` checks for unused files/exports.
 
-## Git
-- Jangan membuat commit, tag, atau push tanpa persetujuan eksplisit pengguna untuk tindakan tersebut. Jangan memakai amend, rebase, atau force-push sebagai pengganti persetujuan itu.
+## Code Conventions & Safety Rules
+- **Tab Removal Safety**: Direct calls to `chrome.tabs.remove` or `browser.tabs.remove` are strictly forbidden outside `safeCloseTab()` in `src/lib/sitedata.js` (enforced by ESLint and `tests/no-raw-tab-remove.mjs`). Use `ownership.safeCloseTab()`.
+- **XSS & Logging**: `innerHTML` and `outerHTML` are forbidden. `console.log` is blocked by ESLint across `src/` (except `src/lib/site-log.js`). Never log cookie values or user passwords.
+- **Data Preservation**: Never delete browser/user storage or wipe data broadly. Maintain Chrome MV3 backup/restore compatibility contracts (v2 envelope, PBKDF2 600k iterations, AES-256-GCM).
+
+## Git & Workflow
+- Do NOT run `git commit`, `git tag`, or `git push` without explicit user permission.
+- **Agent Skills**: Local skill instructions exist under `docs/agent-skills/`.
