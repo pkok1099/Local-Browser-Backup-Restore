@@ -10,6 +10,10 @@ const cases = [
   ['http://foo.bar.localhost:8080/x', true],
   ['http://127.0.0.1/', true],
   ['http://127.0.0.1:8080/', true],
+  ['http://127.0.0.2/', true], // whole 127.0.0.0/8 is loopback, not just .1
+  ['http://[::1]/', true], // IPv6 loopback (URL.hostname keeps brackets)
+  ['http://[::1]:4321/', true], // the exact origin from the user's error log
+  ['http://[0:0:0:0:0:0:0:1]/', true], // expanded form normalizes to ::1
   ['http://192.168.1.1/', true],
   ['http://192.168.1.1:3000/path', true],
   ['https://192.0.2.1/', true],
@@ -26,6 +30,7 @@ const cases = [
   ['https://contoh.com/?q=localhost', false], // substring in query must NOT block
   ['https://localhost.example.com/', false], // localhost as subdomain of public domain
   ['https://192.example.com/', false], // starts with 192. but not an IP
+  ['http://[::2]/', false], // IPv6 but NOT loopback — must not over-block
   ['http://example.com:8080/', false],
 ];
 for (const [url, expected] of cases) {

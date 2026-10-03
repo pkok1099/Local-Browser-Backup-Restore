@@ -13,6 +13,11 @@ export const SITE_DATA_CONFIG = {
   // the CPU-heavy phase, and 4 proved stable).
   readConcurrency: 4,
   tabLoadTimeoutMs: 20000,
+  // How long a foreign-but-complete page may sit before waitTabReady gives up
+  // on the origin: a redirect may bounce back (SSO / challenge flow), but a
+  // definitive error page never does — so this stays far below the 20s load
+  // timeout while still failing fast.
+  redirectGraceMs: 3000,
   checkpointKey: 'bbr:site-data-checkpoint',
   checkpointEveryOrigins: 10,
   // Incremental site-data (history-gated): the key holding the last complete
@@ -30,9 +35,9 @@ export const SITE_DATA_CONFIG = {
   // touched). Non-web schemes are excluded because the debugger cannot run
   // there at all.
   excluded: {
-    hosts: ['localhost', '127.0.0.1', 'chromewebstore.google.com'],
+    hosts: ['localhost', '127.0.0.1', '[::1]', 'chromewebstore.google.com'],
     hostSuffixes: ['.localhost'], // *.localhost
-    hostPrefixes: ['192.'], // 192.x.x.x
+    hostPrefixes: ['192.', '127.'], // 192.x.x.x (private) and 127.x.x.x (whole IPv4 loopback range)
     schemes: [
       'chrome:',
       'chrome-extension:',

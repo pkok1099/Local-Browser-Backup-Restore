@@ -123,18 +123,47 @@ export function createTabOwnership(notes, verify, onViolation, logFn) {
   installTabsRemoveGuard();
   const ownedTabIds = new Set();
   const closingTabIds = new Set();
+  // Tabs the user activated at least once while we owned them. A background
+  // tab the user never activated cannot have been user-navigated (no UI
+  // gesture navigates a background tab without activating it), so a
+  // markerless page there is the SITE's doing. A touched tab, however, may
+  // have been taken over — the verifier must never close it. Tracked via
+  // chrome.tabs.onActivated; the synchronous tab.active check in the verifier
+  // remains the first line of defense (it needs no event).
+  const userTouchedTabIds = new Set();
+  const onTabActivated = (info) => {
+    const id = info && info.tabId;
+    if (ownedTabIds.has(id)) userTouchedTabIds.add(id);
+  };
+  globalThis.chrome?.tabs?.onActivated?.addListener?.(onTabActivated);
+  // Drop stale IDs the moment a tab disappears: without this, a tab the user
+  // closed externally stays registered until finishScanTab's finally runs,
+  // and a later safeCloseTab would verify whatever now sits behind the ID.
+  const onTabRemoved = (tabId) => {
+    ownedTabIds.delete(tabId);
+    userTouchedTabIds.delete(tabId);
+    closingTabIds.delete(tabId);
+  };
+  globalThis.chrome?.tabs?.onRemoved?.addListener?.(onTabRemoved);
   let disposed = false;
   if (typeof logFn === 'function')
     activeGuardLoggers.set(logFn, (activeGuardLoggers.get(logFn) || 0) + 1);
   const dispose = () => {
+    globalThis.chrome?.tabs?.onActivated?.removeListener?.(onTabActivated);
+    globalThis.chrome?.tabs?.onRemoved?.removeListener?.(onTabRemoved);
     if (disposed || typeof logFn !== 'function') return;
     disposed = true;
     const refs = (activeGuardLoggers.get(logFn) || 1) - 1;
     if (refs > 0) activeGuardLoggers.set(logFn, refs);
     else activeGuardLoggers.delete(logFn);
   };
-  const own = (tabId) => {
+  const own = (tabId, wasActive) => {
     ownedTabIds.add(tabId);
+    // The create response already tells us if the tab came up active (the
+    // platform ignored active:false, or something activated it before own()
+    // ran): the onActivated listener can never have seen that, so mark it
+    // touched here — an event-independent backstop.
+    if (wasActive) userTouchedTabIds.add(tabId);
   };
   async function safeCloseTab(tabId, origin) {
     if (!ownedTabIds.has(tabId) || closingTabIds.has(tabId)) {
@@ -172,7 +201,7 @@ export function createTabOwnership(notes, verify, onViolation, logFn) {
     try {
       let verdict;
       try {
-        verdict = await verify(tabId, origin);
+        verdict = await verify(tabId, origin, userTouchedTabIds);
       } catch (e) {
         verdict = 'gone';
       }
@@ -201,6 +230,7 @@ export function createTabOwnership(notes, verify, onViolation, logFn) {
     } finally {
       closingTabIds.delete(tabId);
       ownedTabIds.delete(tabId); // decide exactly once after verification/removal
+      userTouchedTabIds.delete(tabId); // re-owning starts clean
     }
   }
   return { ownedTabIds, own, safeCloseTab, dispose };
@@ -214,24 +244,40 @@ export function createTabOwnership(notes, verify, onViolation, logFn) {
 // marker), but an error page does NOT verify as failed: the tab ID may have
 // been reused by a user tab in the new session, and an error page alone
 // proves nothing about ownership.
-export async function verifyScanTab(tabId, origin) {
+//
+// userTouchedTabIds (3rd arg, supplied by createTabOwnership): tabs the user
+// activated at least once during our ownership. Such a tab may have been
+// taken over — whatever it shows now, never close it. A tab the user never
+// activated, however, cannot have been user-navigated, so a markerless page
+// there is the SITE's doing (redirect to an error page, possibly
+// cross-origin) and the tab is closed instead of abandoned ungrouped.
+export async function verifyScanTab(tabId, origin, userTouchedTabIds) {
   let tab;
   try {
     tab = await chrome.tabs.get(tabId);
   } catch {
     return 'gone';
   } // already gone
+  // A tab the user is currently viewing is never closed, whatever it shows —
+  // closing it would destroy their active browsing. This also covers a user
+  // who took over a scan tab and is still looking at it.
+  if (tab.active) return 'foreign';
   const looksLikeScan = (u) =>
     typeof u === 'string' &&
     u.includes(SCAN_MARKER) &&
     (origin === '' || originOf(u) === origin);
-  // A navigation in flight AWAY from the scan page vetoes the close: the user
-  // is taking over the tab right now. (A pending navigation TO a scan page
-  // still verifies as ours below.)
+  // A navigation in flight AWAY from the scan page vetoes the close — but
+  // only for a tab the user may be driving. An untouched background tab
+  // cannot be user-navigated (activating it is the only way, which marks it
+  // touched), so a pending navigation there is the SITE's redirect in
+  // flight; the origin already failed, so the tab is closed instead of
+  // leaking. (A pending navigation TO a scan page still verifies as ours
+  // below.) With no touch info (direct callers), stay conservative and veto.
   if (
     typeof tab.pendingUrl === 'string' &&
     tab.pendingUrl !== '' &&
-    !looksLikeScan(tab.pendingUrl)
+    !looksLikeScan(tab.pendingUrl) &&
+    (!userTouchedTabIds || userTouchedTabIds.has(tabId))
   ) {
     return 'foreign';
   }
@@ -245,6 +291,10 @@ export async function verifyScanTab(tabId, origin) {
     }
     return 'ours';
   }
+  // The user activated this tab earlier in our ownership, then navigated away
+  // and left: it may show anything now — never close it. (A tab that still
+  // shows our scan page returned 'ours' above: peeking loses nothing.)
+  if (userTouchedTabIds && userTouchedTabIds.has(tabId)) return 'foreign';
   // Failed load: Chrome shows an error page (chrome-error://). This is still
   // OUR tab — the site failed to load, not a user navigation. Mark as failed
   // so the caller closes it instead of leaving it piled up ungrouped.
@@ -259,7 +309,16 @@ export async function verifyScanTab(tabId, origin) {
   ) {
     return origin === '' ? 'foreign' : 'failed';
   }
-  return 'foreign';
+  // Site redirect: the SITE navigated away from the marker URL (its own 404
+  // page, SPA router, path normalization, or a cross-origin error page) —
+  // not the user (an untouched background tab cannot be user-navigated, and
+  // touched/active tabs returned 'foreign' above). This is still our scan
+  // tab: close it like a failed load instead of misreading it as a user
+  // takeover ('foreign'), which ungroups and abandons the tab — the leak.
+  // Requires a KNOWN origin (crash-recovery safety: with origin unknown the
+  // tab ID may have been reused, so never close). The pendingUrl veto above
+  // already protects an in-flight user navigation.
+  return origin !== '' ? 'failed' : 'foreign';
 }
 
 export function createSiteDataOwnership(notes, onViolation, logFn) {
@@ -334,5 +393,6 @@ export async function cleanupPreviousSessionTabs(logFn) {
   } catch (e) {
     /* ignore */
   }
+  ownership.dispose(); // drop the tab-event listeners for this one-off cleanup
   return { cleaned };
 }

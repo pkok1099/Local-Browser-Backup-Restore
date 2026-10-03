@@ -112,7 +112,8 @@ function makeFakeChrome({
         if (urlMode === 'throw') throw new Error('fake: tab gone');
         if (urlMode === 'taken-over') {
           const origin = t.url.split('/__bbr_site_scan__')[0];
-          return { ...t, status: 'complete', url: origin + '/user-page' };
+          // Realistic takeover: the user activated the tab to use it.
+          return { ...t, status: 'complete', active: true, url: origin + '/user-page' };
         }
         // loadDelayMs: the tab stays 'loading' this long after creation —
         // lets waitTabReady time out.
