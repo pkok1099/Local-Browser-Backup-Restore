@@ -1,6 +1,6 @@
 {
   "name": "local-browser-backup-extension",
-  "version": "1.4.7",
+  "version": "1.4.8",
   "description": "Backup & restore browser data locally or to GitHub, with encryption, daily or weekly scheduling, retry controls, and token-safe settings transfer. No server or telemetry.",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
     "screenshot": "npm run build && node scripts/screenshot.mjs",
     "compile": "tsc --noEmit",
     "prepare": "husky",
-    "test:node": "node tests/lazy-route-retry.mjs && node tests/cloud-retry.mjs && node tests/schedule-settings.mjs && node tests/restore-tabs.mjs && node tests/restore-tabs-android.mjs && node tests/collect-selection.mjs && node tests/site-data-origins.mjs && node tests/pagelib-category-failures.mjs && node tests/cloud-provider-guard.mjs && node tests/no-raw-tab-remove.mjs && node tests/sitedata-tab-cleanup.mjs && node tests/runtime-tab-remove-guard.mjs && node tests/cloud-backup-characterization.mjs && node tests/probe-characterization.mjs && node tests/theme-mode.mjs && node tests/site-log.mjs && node tests/site-exclude.mjs && node tests/no-circular-import.mjs && node tests/verify-scan-failed.mjs && node tests/crypto-kdf-guard.mjs && node tests/cloud-retention-warning.mjs && node tests/cloud-scheduler-lock.mjs && node tests/cloud-session-password.mjs && node tests/site-incremental.mjs",
+    "test:node": "node tests/lazy-route-retry.mjs && node tests/cloud-retry.mjs && node tests/schedule-settings.mjs && node tests/restore-tabs.mjs && node tests/restore-tabs-android.mjs && node tests/collect-selection.mjs && node tests/site-data-origins.mjs && node tests/pagelib-category-failures.mjs && node tests/cloud-provider-guard.mjs && node tests/no-raw-tab-remove.mjs && node tests/sitedata-tab-cleanup.mjs && node tests/runtime-tab-remove-guard.mjs && node tests/cloud-backup-characterization.mjs && node tests/probe-characterization.mjs && node tests/theme-mode.mjs && node tests/site-log.mjs && node tests/site-exclude.mjs && node tests/no-circular-import.mjs && node tests/verify-scan-failed.mjs && node tests/crypto-kdf-guard.mjs && node tests/cloud-retention-warning.mjs && node tests/cloud-scheduler-lock.mjs && node tests/cloud-session-password.mjs && node tests/site-incremental.mjs && node tests/tab-touch-tracking.mjs && node tests/wait-tab-ready.mjs && node tests/url-status.mjs",
     "test:ui": "node tests/extension-ui.mjs",
     "test:e2e": "node tests/e2e/local-roundtrip.mjs && node tests/e2e/cloud-roundtrip.mjs && node tests/e2e/scheduler-roundtrip.mjs && node tests/e2e/sitedata-tabs.mjs && node tests/e2e/sitedata-error-tabs.mjs && node tests/e2e/theme-toggle.mjs",
     "test": "npm run test:node",

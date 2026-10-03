@@ -108,6 +108,10 @@ export type UrlState = {
   error: string | null;
 };
 
+// Failure-list predicate lives in src/lib so the node test suite can cover
+// it (this module imports React and cannot run under plain node).
+export { isFailedUrl, isRetryingUrl } from '@/lib/url-status';
+
 export type SiteScanStats = {
   done: number; // SAVED origins only — fetched-but-unsaved is not counted as done
   fetched: number;

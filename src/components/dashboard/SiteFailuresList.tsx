@@ -2,14 +2,12 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { retrySiteDataUrls, retrySiteDataSave } from '@/dashboard/logic';
-import type { UrlState } from '@/dashboard/store';
+import { isFailedUrl, isRetryingUrl, type UrlState } from '@/dashboard/store';
 import { statusLabel } from './SiteResultsList';
 
 export function SiteFailuresList({ urlStates }: { urlStates: UrlState[] }) {
   const [busy, setBusy] = useState<string | null>(null);
-  const failed = urlStates.filter(
-    (u) => u.status === 'fetch-failed' || u.status === 'save-failed'
-  );
+  const failed = urlStates.filter(isFailedUrl);
   const fetchFailed = failed.filter((u) => u.status === 'fetch-failed');
   const saveFailed = failed.filter((u) => u.status === 'save-failed');
 
@@ -75,7 +73,9 @@ export function SiteFailuresList({ urlStates }: { urlStates: UrlState[] }) {
             className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm"
           >
             <span className="min-w-0 flex-1 break-all">{u.origin}</span>
-            <Badge variant="danger">{statusLabel(u.status)}</Badge>
+            <Badge variant="danger">
+              {isRetryingUrl(u) ? 'mencoba lagi…' : statusLabel(u.status)}
+            </Badge>
             {u.status === 'fetch-failed' && (
               <Button
                 size="sm"

@@ -19,6 +19,9 @@ export function installTestHooks() {
   if (w.__api) return; // already installed
 
   w.__api = {
+    // Push a synthetic entry into the site-log store (layout tests).
+    pushSiteLog: (entry: any) =>
+      import('./site-log-store').then((m) => m.pushSiteLogEntry(entry)),
     meta: async () => {
       const { getChromeVersion } = await import('@/lib/capabilities');
       return {

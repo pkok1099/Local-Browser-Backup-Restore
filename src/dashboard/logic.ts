@@ -798,7 +798,21 @@ async function retrySiteDataUrlsUnlocked(urls: string[]): Promise<void> {
             const byOrigin = new Map<string, UrlState>(
               cur.map((u) => [u.origin, u])
             );
-            for (const u of stats.urlStates || []) byOrigin.set(u.origin, u);
+            for (const u of stats.urlStates || []) {
+              const prev = byOrigin.get(u.origin);
+              if (!prev) {
+                byOrigin.set(u.origin, u);
+                continue;
+              }
+              // A manual retry runs a fresh crawl: keep the last failure
+              // visible until the origin actually succeeds, so the failure
+              // list doesn't flicker while the retry is in flight.
+              const succeeded = u.status === 'saved' || u.status === 'fetched';
+              byOrigin.set(
+                u.origin,
+                succeeded ? u : { ...u, error: u.error ?? prev.error }
+              );
+            }
             return {
               ...b,
               siteScan: { ...stats, urlStates: [...byOrigin.values()] },

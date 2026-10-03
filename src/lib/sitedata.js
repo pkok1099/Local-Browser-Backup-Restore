@@ -89,7 +89,8 @@ export function isExcluded(rawUrl) {
       return { excluded: true, reason: `excluded host suffix ${s}` };
   }
   for (const p of cfg.hostPrefixes) {
-    // Only IPv4 literals (192.0.0.0/8), not hostnames like 192.example.com.
+    // Only IPv4 literals (192.0.0.0/8, 127.0.0.0/8), not hostnames like
+    // 192.example.com.
     const parts = host.split('.');
     const isV4 =
       parts.length === 4 &&
@@ -231,15 +232,31 @@ async function findOpenTab(origin) {
 // Wait until a freshly created tab actually navigated to the target origin —
 // a new tab reports status 'complete' for about:blank BEFORE the navigation
 // starts. Returns false when the tab vanished, the load timed out, or
-// isCancelled() becomes true (e.g. the user pressed Stop).
-async function waitTabReady(tabId, origin, isCancelled) {
+// isCancelled() becomes true (e.g. the user pressed Stop). Also bails out
+// early when the tab committed to a page that can never become the origin
+// (the site redirected the marker URL away, e.g. to a cross-origin error
+// page): waiting the full timeout cannot help, so fail fast and let the
+// caller close the tab via the ownership verifier instead of leaking it.
+export async function waitTabReady(tabId, origin, isCancelled) {
   const t0 = Date.now();
+  let foreignSince = 0;
   for (;;) {
     if (typeof isCancelled === 'function' && isCancelled()) return false;
     try {
       const t = await chrome.tabs.get(tabId);
-      if (t.status === 'complete' && (t.url || '').startsWith(origin))
-        return true;
+      const url = t.url || '';
+      if (t.status === 'complete' && url !== '' && url !== 'about:blank') {
+        if (url.startsWith(origin)) return true;
+        // The site redirected the marker away. It might bounce back (SSO /
+        // challenge flow), so only give up once the foreign page has been
+        // stable for redirectGraceMs — a definitive error page never comes
+        // back, and this still fails fast instead of burning the 20s timeout.
+        if (!foreignSince) foreignSince = Date.now();
+        else if (Date.now() - foreignSince > SITE_DATA_CONFIG.redirectGraceMs)
+          return false;
+      } else {
+        foreignSince = 0; // transient state — a new navigation may still land
+      }
     } catch (e) {
       return false;
     } // tab vanished
@@ -752,7 +769,10 @@ export async function collectSiteData(progress, opts = {}) {
         origin,
         status,
         attempts: status === 'fetching' ? prev.attempts + 1 : prev.attempts,
-        error: error || null,
+        // Keep the last failure visible while a retry is in flight: the
+        // dashboard's failure list stays stable instead of flickering
+        // (fetch-failed -> fetching -> fetch-failed) on every retry wave.
+        error: error || (status === 'fetching' ? prev.error || null : null),
       });
     };
     const listStates = () => [...states.values()];
@@ -1273,8 +1293,20 @@ export async function collectSiteData(progress, opts = {}) {
             }
           );
         }
+        // Diagnostic: record WHY the tab was kept (user viewing it / user
+        // navigating / taken over earlier) so a future leak report pinpoints
+        // the verdict path. In the live path a kept tab is always
+        // user-driven: an untouched markerless tab verifies 'failed' now.
+        let keptWhy = 'taken over by the user earlier';
+        try {
+          const t = await chrome.tabs.get(rec.tab.id);
+          if (t.active) keptWhy = 'user is viewing it';
+          else if (t.pendingUrl) keptWhy = `user navigating to ${t.pendingUrl}`;
+        } catch (e) {
+          keptWhy = 'tab closed before verify finished';
+        }
         note(
-          `sitedata: left scan tab for ${rec.origin} untouched — it no longer shows the scan page`,
+          `sitedata: left scan tab for ${rec.origin} untouched (${keptWhy}) — it no longer shows the scan page`,
           'WARN',
           'SAFETY',
           { url: rec.origin, corr: rec.origin, tabId: rec.tab && rec.tab.id }
@@ -1392,7 +1424,7 @@ export async function collectSiteData(progress, opts = {}) {
       });
     }
     rec.tab = tab;
-    ownership.own(tab.id); // register IMMEDIATELY after successful create
+    ownership.own(tab.id, tab.active); // register IMMEDIATELY after successful create
     void persistOwnedIds();
     log('INFO', 'W1', `tab ${tab.id} created`, {
       url: rec.origin,

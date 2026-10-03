@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { appendLog, setState, useApp } from '@/dashboard/store';
+import { appendLog, isFailedUrl, setState, useApp } from '@/dashboard/store';
 import { loadRouteChunk, retryRouteChunk } from '@/dashboard/lazy-route';
 import {
   loadTheme,
@@ -136,9 +136,7 @@ export default function App() {
   }, [route, state.backup.running]);
 
   const failCount =
-    state.backup.siteScan?.urlStates.filter(
-      (u) => u.status === 'fetch-failed' || u.status === 'save-failed'
-    ).length ?? 0;
+    state.backup.siteScan?.urlStates.filter(isFailedUrl).length ?? 0;
 
   return (
     <div className="min-h-screen bg-background text-foreground">

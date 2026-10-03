@@ -42,7 +42,10 @@ function emit() {
 
 export function pushSiteLogEntry(entry: SiteLogEntryInput) {
   const normalized = { ...entry, id: entry.id || crypto.randomUUID() };
-  entries.push(normalized);
+  // New array reference: useSyncExternalStore compares snapshots with
+  // Object.is, so an in-place push would never re-render the Log page
+  // (live entries would only appear on remount).
+  entries = [...entries, normalized];
   if (entries.length > MAX_LIVE) entries = entries.slice(-MAX_LIVE);
   if (normalized.level === 'ERROR' || normalized.level === 'FATAL')
     unseenError = true;

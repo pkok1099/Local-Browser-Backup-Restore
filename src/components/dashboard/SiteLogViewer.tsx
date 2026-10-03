@@ -249,14 +249,19 @@ export function SiteLogViewer() {
             >
               {LEVEL_ICONS[e.level]} {e.level}
             </span>
-            <Badge variant="default" className="shrink-0 text-[10px]">
+            <Badge
+              variant="default"
+              className="shrink-0 self-start text-[10px]"
+            >
               {e.category}
             </Badge>
-            <span className="min-w-0 flex-1 break-words">{e.message}</span>
+            <span className="min-w-0 flex-1 break-words max-sm:basis-full">
+              {e.message}
+            </span>
             {e.url && (
               <button
                 onClick={() => setSelectedUrl(e.url)}
-                className="shrink-0 text-blue-600 dark:text-blue-400 underline"
+                className="max-w-full shrink-0 break-all text-blue-600 underline dark:text-blue-400"
                 title="Lihat riwayat URL ini"
               >
                 {e.url}
