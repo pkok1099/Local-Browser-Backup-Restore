@@ -138,6 +138,6 @@ The v1.4.0 migration preserves backup format v2, the StorageProvider contract, p
 
 ---
 
-## Icon attribution
+## Icon attribution 
 
 The extension icon (`public/icon.png`) is by Smashicons from Flaticon — [www.flaticon.com](https://www.flaticon.com).
