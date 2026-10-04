@@ -101,7 +101,7 @@ try {
       }
     });
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     await page.locator('#local-backup').waitFor();
     await page.waitForFunction(() => typeof window.__api === 'object');
@@ -242,33 +242,42 @@ try {
       );
     };
     await visitLazyRoute(
-      '#/pengaturan',
+      '#/settings',
       () =>
         page.waitForFunction(() =>
           document.body.textContent.includes('Website data — retry')
         ),
-      'Pengaturan'
+      'Settings'
     );
     await visitLazyRoute(
-      '#/hasil',
+      '#/results',
       () =>
         page
           .locator('main')
-          .getByText('Hasil situs', { exact: true })
+          .getByText('Site results', { exact: true })
           .waitFor(),
-      'Hasil'
+      'Results'
     );
     await visitLazyRoute(
-      '#/kegagalan',
+      '#/failures',
       () =>
-        page.locator('main').getByText('Kegagalan', { exact: true }).waitFor(),
-      'Kegagalan'
+        page.locator('main').getByText('Failures', { exact: true }).waitFor(),
+      'Failures'
     );
     await visitLazyRoute(
-      '#/lainnya',
+      '#/more',
       () => page.locator('#cloud-only-backup').waitFor(),
-      'Lainnya'
+      'More'
     );
+    // Previously shared Indonesian hashes should resolve to English routes.
+    await page.evaluate(() => {
+      window.location.hash = '#/pengaturan';
+    });
+    await page.waitForFunction(() => location.hash === '#/settings');
+    await page
+      .locator('main')
+      .getByText('Website data — retry & timeout', { exact: true })
+      .waitFor();
     await page
       .locator('[data-toaster-ready]')
       .waitFor({ state: 'attached', timeout: 10000 });
@@ -514,7 +523,7 @@ try {
     });
 
     const logExportPromise = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'Ekspor JSON' }).click();
+    await page.getByRole('button', { name: 'Export JSON' }).click();
     const logExport = await logExportPromise;
     const logExportStream = await logExport.createReadStream();
     let logExportText = '';
@@ -558,7 +567,7 @@ try {
         { timeout: 15000 }
       );
       await page.goto(
-        `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+        `chrome-extension://${extensionId}/dashboard.html#/summary`
       );
       const metrics = await page.evaluate(() => ({
         innerWidth: window.innerWidth,
@@ -658,13 +667,13 @@ try {
     console.log(
       `PASS log entry layout @ 360px: message ${logMetrics.msgWidth}px, badge ${logMetrics.badgeHeight}px`
     );
-    // Back to Ringkasan for the assertions below (they expect that route).
+    // Back to Summary for the assertions below (they expect that route).
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     await page.locator('#local-backup').waitFor({ timeout: 15000 });
 
-    // Core controls exist (Ringkasan page is the default route).
+    // Core controls exist (Summary is the default route).
     assert.equal(
       await page.locator('#local-backup').count(),
       1,
@@ -677,9 +686,9 @@ try {
     );
     // Hash routing: each page renders without a reload (crawl context survives).
     for (const [hash, marker] of [
-      ['#/hasil', 'Hasil situs'],
-      ['#/kegagalan', 'Kegagalan'],
-      ['#/pengaturan', 'Website data — retry'],
+      ['#/results', 'Site results'],
+      ['#/failures', 'Failures'],
+      ['#/settings', 'Website data — retry'],
     ]) {
       await page.goto(
         `chrome-extension://${extensionId}/dashboard.html${hash}`
@@ -691,7 +700,7 @@ try {
       );
     }
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     assert.deepEqual(
       pageErrors.filter((e) => !e.includes('net::')),
@@ -699,14 +708,14 @@ try {
       'page navigation should not produce page errors'
     );
 
-    // Cloud controls live on the Lainnya page (hash routing, no reload).
+    // Cloud controls live on the More page (hash routing, no reload).
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/lainnya`
+      `chrome-extension://${extensionId}/dashboard.html#/more`
     );
     await page.waitForFunction(
       () =>
         document
-          .querySelector('a[href="#/lainnya"]')
+          .querySelector('a[href="#/more"]')
           ?.getAttribute('aria-current') === 'page',
       null,
       { timeout: 5000 }
@@ -745,9 +754,9 @@ try {
       1,
       'settings import should be available'
     );
-    // Website-data selection lives on the Pengaturan page.
+    // Website-data selection lives on the Settings page.
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/pengaturan`
+      `chrome-extension://${extensionId}/dashboard.html#/settings`
     );
     await page.waitForFunction(
       () =>
@@ -778,9 +787,9 @@ try {
       'search should filter out nonmatching website origins'
     );
 
-    // Schedule controls live on the Lainnya page (CloudCard).
+    // Schedule controls live on the More page (CloudCard).
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/lainnya`
+      `chrome-extension://${extensionId}/dashboard.html#/more`
     );
     // Weekly <-> daily schedule toggle (Radix Select + Radix Checkboxes).
     await page.locator('#sched-frequency').click();
@@ -950,7 +959,7 @@ try {
       { timeout: 15000 }
     );
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/lainnya`
+      `chrome-extension://${extensionId}/dashboard.html#/more`
     );
     await page.waitForFunction(
       () =>
@@ -990,7 +999,7 @@ try {
 
     // Clear Results is guarded across pages and preserves recovery/security state.
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     const clearResultsButton = page.locator('#clear-results');
     assert.equal(
@@ -1233,7 +1242,7 @@ try {
 
     const activityPage = await extensionContext.newPage();
     await activityPage.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     const secondClearButton = activityPage.locator('#clear-results');
     await secondClearButton.waitFor();
@@ -1521,7 +1530,7 @@ try {
 
     const abandonedPage = await extensionContext.newPage();
     await abandonedPage.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     await startNativeActivity(abandonedPage, 'abandoned');
     await activityPage.waitForFunction(
@@ -1851,7 +1860,7 @@ try {
     );
     await page.locator('#restore-cancel').click();
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     await page.locator('#local-restore').waitFor();
 
@@ -1959,7 +1968,7 @@ try {
       }, unavailableReadingListUrl);
     }
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     await page.locator('#local-restore').waitFor();
 
@@ -2018,7 +2027,7 @@ try {
     );
     await page.locator('#restore-cancel').click();
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     await page.locator('#local-restore').waitFor();
 
@@ -2073,7 +2082,7 @@ try {
     };
     await finalizeIntegrity(pendingReleaseFixture);
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     await page.locator('#local-restore').waitFor();
     await page.locator('#local-restore').click();
@@ -2190,7 +2199,7 @@ try {
     }, pendingReleaseUrl);
     await page.locator('#restore-cancel').click();
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     await page.locator('#local-restore').waitFor();
     await page.locator('#local-restore').click();
@@ -2294,7 +2303,7 @@ try {
       'absent results should use neutral styling'
     );
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
 
     const preservedValues = {
@@ -2359,7 +2368,7 @@ try {
       })
     );
     await page.evaluate(() => {
-      window.location.hash = '#/ringkasan';
+      window.location.hash = '#/summary';
     });
     await page.locator('#clear-results').waitFor();
 
@@ -2421,9 +2430,9 @@ try {
       clearedState.restore.summary?.rows.some((row) => row.cat === 'bookmarks'),
       'clear should preserve the pending restore preview'
     );
-    await page.getByRole('button', { name: 'Download hasil' }).waitFor();
+    await page.getByRole('button', { name: 'Download results' }).waitFor();
     assert.equal(
-      await page.getByRole('button', { name: 'Download hasil' }).isDisabled(),
+      await page.getByRole('button', { name: 'Download results' }).isDisabled(),
       true
     );
     const preservedAfterClear = await page.evaluate(
@@ -2603,7 +2612,7 @@ try {
 
     const logActivityPage = await extensionContext.newPage();
     await logActivityPage.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     await logActivityPage.locator('#clear-results').waitFor();
     await page.evaluate(() => {
@@ -2801,10 +2810,10 @@ try {
     await seedClearLogsScan(page);
     await seedClearLogsScan(logActivityPage);
     await page
-      .getByText('ada ERROR/FATAL belum dilihat', { exact: true })
+      .getByText('Unseen ERROR/FATAL entries', { exact: true })
       .waitFor();
     await logActivityPage
-      .getByText('ada ERROR/FATAL belum dilihat', { exact: true })
+      .getByText('Unseen ERROR/FATAL entries', { exact: true })
       .waitFor();
 
     await page.evaluate(() =>
@@ -2827,7 +2836,7 @@ try {
           ].map((row) => row.textContent),
           log: document.querySelector('#log')?.textContent ?? null,
           badge: document.body.textContent.includes(
-            'ada ERROR/FATAL belum dilihat'
+            'Unseen ERROR/FATAL entries'
           ),
           backup: JSON.parse(JSON.stringify(state.backup)),
           restore: JSON.parse(JSON.stringify(state.restore)),
@@ -3016,7 +3025,7 @@ try {
 
     // Hold a real local persisted read on page A across its failed clear attempt.
     await page.evaluate(() => {
-      window.location.hash = '#/ringkasan';
+      window.location.hash = '#/summary';
     });
     await page.locator('#local-backup').waitFor({ timeout: 10000 });
     await page.evaluate(() => {
@@ -3562,7 +3571,7 @@ try {
     );
     assert.equal(
       await page
-        .getByText('ada ERROR/FATAL belum dilihat', { exact: true })
+        .getByText('Unseen ERROR/FATAL entries', { exact: true })
         .count(),
       0,
       'successful Clear Logs should remove the unseen crawl-error badge'
@@ -3602,7 +3611,7 @@ try {
     );
     assert.equal(
       await logActivityPage
-        .getByText('ada ERROR/FATAL belum dilihat', { exact: true })
+        .getByText('Unseen ERROR/FATAL entries', { exact: true })
         .count(),
       0,
       'peer Clear Logs notification should reset only its unseen crawl-error badge'
@@ -3746,7 +3755,7 @@ try {
       });
     }, scrollLogSeeds);
     await page.evaluate(() => {
-      window.location.hash = '#/ringkasan';
+      window.location.hash = '#/summary';
     });
     await page.locator('#local-backup').waitFor();
     await page.evaluate(() => {
@@ -3887,16 +3896,12 @@ try {
 
     // Restore + encrypted-backup password flow.
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     await page.locator('#local-restore').click();
-    assert.equal(
-      await page.locator('#section-restore').isVisible(),
-      true,
-      'restore action should reveal the file flow'
-    );
+    await page.locator('#section-restore').waitFor({ state: 'visible' });
     await page.goto(
-      `chrome-extension://${extensionId}/dashboard.html#/ringkasan`
+      `chrome-extension://${extensionId}/dashboard.html#/summary`
     );
     await page.locator('#local-backup-encrypted').click();
     await page
@@ -3962,13 +3967,13 @@ try {
     failurePage.on('framenavigated', (frame) => {
       if (
         frame === failurePage.mainFrame() &&
-        frame.url().endsWith('/dashboard.html#/pengaturan')
+        frame.url().endsWith('/dashboard.html#/settings')
       ) {
         routeDocumentNavigations += 1;
       }
     });
     await failurePage.goto(
-      `chrome-extension://${failureExtensionId}/dashboard.html#/pengaturan`
+      `chrome-extension://${failureExtensionId}/dashboard.html#/settings`
     );
     await failurePage.getByRole('alert').waitFor({ timeout: 15000 });
     assert.ok(
@@ -3978,19 +3983,19 @@ try {
     assert.deepEqual(
       await failurePage.evaluate(() => ({
         hash: location.hash,
-        retryGuard: sessionStorage.getItem('bbr:lazy-route-retry:pengaturan'),
+        retryGuard: sessionStorage.getItem('bbr:lazy-route-retry:settings'),
       })),
-      { hash: '#/pengaturan', retryGuard: '1' },
+      { hash: '#/settings', retryGuard: '1' },
       'the fallback should preserve the route hash and stop automatic reload loops'
     );
     await copyFile(originalChunk, copiedChunk);
     await failurePage
-      .getByRole('button', { name: 'Muat ulang dan coba lagi' })
+      .getByRole('button', { name: 'Reload and try again' })
       .click();
     await failurePage.locator('#site-data-count').waitFor({ timeout: 20000 });
     assert.equal(
       await failurePage.evaluate(() => location.hash),
-      '#/pengaturan',
+      '#/settings',
       'manual retry should keep the requested route'
     );
     console.log(

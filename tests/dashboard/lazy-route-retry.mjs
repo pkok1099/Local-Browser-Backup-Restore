@@ -16,22 +16,22 @@ let reloads = 0;
 const recovery = { storage, reload: () => { reloads += 1; } };
 const failToLoad = async () => { throw new Error('simulated route chunk network failure'); };
 
-await assert.rejects(loadRouteChunk('pengaturan', failToLoad, recovery), /simulated route chunk network failure/);
+await assert.rejects(loadRouteChunk('settings', failToLoad, recovery), /simulated route chunk network failure/);
 assert.equal(reloads, 1, 'the first failed route import triggers one dashboard reload');
-assert.equal(storage.values.get('bbr:lazy-route-retry:pengaturan'), '1');
+assert.equal(storage.values.get('bbr:lazy-route-retry:settings'), '1');
 
-await assert.rejects(loadRouteChunk('pengaturan', failToLoad, recovery), /simulated route chunk network failure/);
+await assert.rejects(loadRouteChunk('settings', failToLoad, recovery), /simulated route chunk network failure/);
 assert.equal(reloads, 1, 'a repeated failure must not cause an automatic reload loop');
 
 const loadedModule = { default: 'settings page' };
-assert.equal(await loadRouteChunk('pengaturan', async () => loadedModule, recovery), loadedModule);
-assert.equal(storage.values.has('bbr:lazy-route-retry:pengaturan'), false, 'a successful load clears the retry guard');
+assert.equal(await loadRouteChunk('settings', async () => loadedModule, recovery), loadedModule);
+assert.equal(storage.values.has('bbr:lazy-route-retry:settings'), false, 'a successful load clears the retry guard');
 
-await assert.rejects(loadRouteChunk('hasil', failToLoad, recovery), /simulated route chunk network failure/);
+await assert.rejects(loadRouteChunk('results', failToLoad, recovery), /simulated route chunk network failure/);
 assert.equal(reloads, 2, 'a different route gets an independent one-shot retry');
-retryRouteChunk('hasil', recovery);
+retryRouteChunk('results', recovery);
 assert.equal(reloads, 3, 'the fallback retry action reloads the dashboard');
-assert.equal(storage.values.has('bbr:lazy-route-retry:hasil'), false, 'manual retry clears its guard first');
+assert.equal(storage.values.has('bbr:lazy-route-retry:results'), false, 'manual retry clears its guard first');
 
 const unavailableStorage = {
   getItem() { throw new Error('storage unavailable'); },

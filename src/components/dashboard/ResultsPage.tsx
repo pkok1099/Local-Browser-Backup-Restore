@@ -19,12 +19,12 @@ export default function ResultsPage() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-[15px]">Hasil situs</CardTitle>
+        <CardTitle className="text-[15px]">Site results</CardTitle>
         {meta && (
           <p className="text-xs text-muted-foreground">
             {meta.completedAt
-              ? `Hasil terakhir · selesai ${formatScanTime(meta.completedAt)}`
-              : `Diperbarui ${formatScanTime(meta.startedAt)} · belum selesai`}
+              ? `Latest scan completed at ${formatScanTime(meta.completedAt)}`
+              : `Scan started at ${formatScanTime(meta.startedAt)}; no completion time yet`}
           </p>
         )}
       </CardHeader>

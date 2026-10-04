@@ -36,7 +36,7 @@ export async function saveSiteDataScanWindow(n: number): Promise<void> {
   await chrome.storage.local.set({ [SITE_DATA_SCAN_WINDOW_KEY]: v });
 }
 
-// Additional user-safe tunables (dashboard Pengaturan page). Bounds keep the
+// Additional user-safe tunables (dashboard Settings page). Bounds keep the
 // crawl safe: attempts 1-5, read timeout 15-180s, checkpoint every 5-50.
 const SITE_DATA_TUNING_KEY = 'bbr:site-data-tuning';
 export type SiteDataTuning = {

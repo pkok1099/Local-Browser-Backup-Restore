@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { register } from 'node:module';
 
-// Loader yang diuji (src/dashboard/site-scan-persist.ts) mengimpor './store'
-// (React — tidak bisa jalan di node) dan '@/lib/site-scan-persist' (JS murni).
-// Stub './store' via data: URL yang meneruskan getState/patchState ke objek
-// lokal lewat globalThis; arahkan '@/lib/site-scan-persist' ke FILE ASLI agar
-// kode produksi ikut teruji.
+// The loader under test (src/dashboard/site-scan-persist.ts) imports './store'
+// (React, which cannot run directly in Node) and '@/lib/site-scan-persist' (plain JS).
+// Stub './store' with a data URL that forwards getState/patchState to a local
+// object through globalThis; point '@/lib/site-scan-persist' to the REAL FILE so
+// the production code is exercised too.
 const PERSIST_URL = new URL(
   '../../src/lib/site-scan-persist.js',
   import.meta.url
@@ -50,7 +50,7 @@ function resetChrome() {
   };
 }
 
-// ---- Fake store (semantik patchState disamakan dengan store.ts asli) ----
+// ---- Fake store (patchState semantics match the real store.ts) ----
 function useFakeStore(siteScan) {
   const fake = {
     state: { backup: { siteScan, siteScanMeta: null } },
@@ -91,7 +91,7 @@ const stats = {
   tuning: null,
 };
 
-// (a) record completed + in-memory kosong -> siteScan terisi, meta benar
+// (a) completed record + empty in-memory state -> siteScan populated, metadata correct
 resetChrome();
 backing[KEY] = {
   runId: 'run-a',
@@ -110,7 +110,7 @@ assert.deepEqual(fake.state.backup.siteScanMeta, {
   completedAt: 2000,
 });
 
-// (b) record in-progress (completedAt null) -> terisi partial, meta.completedAt null
+// (b) in-progress record (completedAt null) -> partial data loaded, meta.completedAt null
 resetChrome();
 backing[KEY] = {
   runId: 'run-b',
@@ -128,21 +128,21 @@ assert.deepEqual(fake.state.backup.siteScanMeta, {
   completedAt: null,
 });
 
-// (c) storage kosong -> return false, tidak patch
+// (c) empty storage -> return false without patching
 resetChrome();
 fake = useFakeStore(null);
 assert.equal(await loadPersistedSiteScan(), false);
-assert.equal(fake.patched, 0, 'tidak boleh patch saat storage kosong');
+assert.equal(fake.patched, 0, 'must not patch when storage is empty');
 assert.equal(fake.state.backup.siteScanMeta, null);
 
-// (d) record corrupt -> return false, tidak patch
+// (d) corrupt record -> return false without patching
 resetChrome();
-backing[KEY] = 'bukan-record';
+backing[KEY] = 'not-a-record';
 fake = useFakeStore(null);
 assert.equal(await loadPersistedSiteScan(), false);
-assert.equal(fake.patched, 0, 'tidak boleh patch saat record corrupt');
+assert.equal(fake.patched, 0, 'must not patch when the record is corrupt');
 
-// (e) in-memory SUDAH ada (live) -> tidak ditimpa walau storage lebih baru
+// (e) live in-memory state already exists -> do not overwrite it, even if storage is newer
 resetChrome();
 backing[KEY] = {
   runId: 'run-stale',
@@ -164,11 +164,11 @@ const live = {
 };
 fake = useFakeStore(live);
 assert.equal(await loadPersistedSiteScan(), false);
-assert.equal(fake.patched, 0, 'live in-memory tidak boleh ditimpa');
+assert.equal(fake.patched, 0, 'must not overwrite live in-memory state');
 assert.equal(fake.state.backup.siteScan.urlStates[0].origin, 'https://live.example');
 assert.equal(fake.state.backup.siteScanMeta, null);
 
-// (f) stats null + urlStates kosong -> siteScan tetap null tapi meta ter-set
+// (f) null stats + empty urlStates -> siteScan stays null, but metadata is set
 resetChrome();
 backing[KEY] = {
   runId: 'run-f',

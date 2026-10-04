@@ -29,7 +29,7 @@ export default function LogPage() {
         <Card className="border-red-300 dark:border-red-800">
           <CardHeader>
             <CardTitle className="text-[15px] text-red-600 dark:text-red-400">
-              Peringatan keamanan ({security.length})
+              Security warnings ({security.length})
             </CardTitle>
           </CardHeader>
           <CardContent>

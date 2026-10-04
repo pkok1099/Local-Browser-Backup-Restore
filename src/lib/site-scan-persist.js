@@ -1,17 +1,18 @@
-// Persist hasil site-scan agar halaman Results/Failures tetap terisi setelah
-// reload/tab baru. state.backup.siteScan.urlStates hanya in-memory; modul ini
-// menyimpan snapshot incremental ke chrome.storage.local (via storage DI, jadi
-// tetap node-testable) dan membacanya kembali saat halaman di-mount.
+// Persist site-scan results so the Results and Failures pages remain populated
+// after a reload or when opened in a new tab. state.backup.siteScan.urlStates
+// exists only in memory; this module writes incremental snapshots to
+// chrome.storage.local (through injected storage, so it remains testable in Node)
+// and reads them back when a page mounts.
 //
-// JS murni: tanpa import React/chrome global. Semua write/read/clear
-// best-effort — TIDAK PERNAH throw, kegagalan storage tidak boleh menggagalkan
-// backup.
+// Plain JavaScript: no React or global chrome imports. All write/read/clear
+// operations are best-effort and NEVER throw; storage failures must not fail
+// a backup.
 
 export const SITE_SCAN_STORAGE_KEY = 'bbr:last-site-scan';
 export const SITE_SCAN_PERSIST_THROTTLE_MS = 5000;
 
-// crypto.randomUUID() bila tersedia; fallback string acak yang tetap unik
-// (lingkungan lama tanpa WebCrypto — keunikan, bukan UUID, yang dibutuhkan).
+// Use crypto.randomUUID() when available; otherwise use a random string that
+// remains unique (older environments without WebCrypto need uniqueness, not a UUID).
 export function newSiteScanRunId() {
   const c = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
   if (c && typeof c.randomUUID === 'function') return c.randomUUID();
@@ -23,8 +24,8 @@ export function newSiteScanRunId() {
   );
 }
 
-// Throttle penulisan: true bila sudah >= intervalMs sejak tulis terakhir.
-// lastWriteMs=0 = belum pernah tulis -> selalu true.
+// Write throttle: true when at least intervalMs has elapsed since the last write.
+// lastWriteMs=0 means nothing has been written yet, so this always returns true.
 export function shouldPersistSiteScan(
   lastWriteMs,
   nowMs,
@@ -33,8 +34,8 @@ export function shouldPersistSiteScan(
   return nowMs - lastWriteMs >= intervalMs;
 }
 
-// Pisahkan urlStates (besar, dibaca Results/Failures) dari stats agar record
-// stabil dan mudah dibaca; input tidak dimutasi.
+// Keep the large urlStates array (read by Results/Failures) separate from stats
+// so the record stays stable and easy to inspect; the input is not mutated.
 export function buildSiteScanRecord({
   runId,
   startedAt,
@@ -55,7 +56,7 @@ export function buildSiteScanRecord({
 
 const isRecord = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 
-// Best-effort write: false (tidak throw) bila storage null/rusak.
+// Best-effort write: returns false (does not throw) if storage is null or broken.
 export async function writeSiteScanRecord(storage, record) {
   try {
     if (!storage || typeof storage.set !== 'function') return false;
@@ -66,8 +67,8 @@ export async function writeSiteScanRecord(storage, record) {
   }
 }
 
-// Best-effort read: null bila storage null, payload hilang/corrupt, atau
-// validasi minimal gagal (runId harus string, urlStates harus array).
+// Best-effort read: returns null if storage is null, the payload is missing or
+// corrupt, or basic validation fails (runId must be a string; urlStates an array).
 export async function readSiteScanRecord(storage) {
   try {
     if (!storage || typeof storage.get !== 'function') return null;
@@ -82,7 +83,7 @@ export async function readSiteScanRecord(storage) {
   }
 }
 
-// Best-effort clear: false (tidak throw) bila storage null/rusak.
+// Best-effort clear: returns false (does not throw) if storage is null or broken.
 export async function clearSiteScanRecord(storage) {
   try {
     if (!storage || typeof storage.remove !== 'function') return false;

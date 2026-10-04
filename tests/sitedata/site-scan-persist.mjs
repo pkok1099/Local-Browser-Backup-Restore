@@ -1,7 +1,7 @@
-// Persist modul site-scan (Results/Failures lazy): throttle, shaping record,
-// dan baca/tulis best-effort ke chrome.storage.local via storage DI.
+// Tests for the lazy site-scan persistence module (Results/Failures): throttling,
+// record shaping, and best-effort reads/writes to chrome.storage.local via injected storage.
 //
-// Skrip Node mandiri: `node tests/site-scan-persist.mjs`; gagal via exit code.
+// Standalone Node script: `node tests/sitedata/site-scan-persist.mjs`; failures use a non-zero exit code.
 import { strict as assert } from 'node:assert/strict';
 import {
   SITE_SCAN_STORAGE_KEY,
@@ -23,7 +23,7 @@ const ok = (cond, msg) => {
 // --- konstanta -------------------------------------------------------------
 ok(
   SITE_SCAN_STORAGE_KEY === 'bbr:last-site-scan',
-  'storage key sesuai kontrak'
+  'storage key matches the contract'
 );
 ok(SITE_SCAN_PERSIST_THROTTLE_MS === 5000, 'default throttle 5000ms');
 
@@ -31,8 +31,8 @@ ok(SITE_SCAN_PERSIST_THROTTLE_MS === 5000, 'default throttle 5000ms');
 {
   const a = newSiteScanRunId();
   const b = newSiteScanRunId();
-  ok(typeof a === 'string' && a.length > 0, 'runId adalah string non-kosong');
-  ok(a !== b, 'runId unik antar panggilan');
+  ok(typeof a === 'string' && a.length > 0, 'runId is a non-empty string');
+  ok(a !== b, 'runId is unique across calls');
 }
 
 // --- shouldPersistSiteScan --------------------------------------------------
@@ -48,7 +48,7 @@ ok(
 );
 ok(
   shouldPersistSiteScan(0, 4999) === false,
-  'throttle: lastWriteMs=0 belum pernah, diff 4999 -> false'
+  'throttle: lastWriteMs=0 means no prior write; diff 4999 -> false'
 );
 ok(
   shouldPersistSiteScan(0, 5000) === true,
@@ -72,7 +72,7 @@ ok(
 );
 ok(
   shouldPersistSiteScan(5000, 4000, 1000) === false,
-  'throttle: clock mundur (diff negatif < interval) -> false'
+  'throttle: clock moved backward (negative diff < interval) -> false'
 );
 
 // --- buildSiteScanRecord -----------------------------------------------------
@@ -103,8 +103,8 @@ ok(
   passed += 1;
   assert.deepStrictEqual(rec.urlStates, urlStates);
   passed += 1;
-  ok(!('urlStates' in rec.stats), 'stats tidak membawa urlStates');
-  // input tidak termutasi
+  ok(!('urlStates' in rec.stats), 'stats do not include urlStates');
+  // input is not mutated
   assert.deepStrictEqual(siteScan, {
     total: 2,
     failed: 1,
@@ -186,12 +186,12 @@ for (const [label, stored] of [
   );
 }
 
-// --- storage null -> tidak throw ----------------------------------------------
+// --- null storage does not throw ----------------------------------------------
 ok((await writeSiteScanRecord(null, {})) === false, 'write null -> false');
 ok((await readSiteScanRecord(null)) === null, 'read null -> null');
 ok((await clearSiteScanRecord(null)) === false, 'clear null -> false');
 
-// --- clear menghapus record ----------------------------------------------------
+// --- clear removes the record --------------------------------------------------
 {
   const storage = makeStorage();
   const record = buildSiteScanRecord({
@@ -200,12 +200,12 @@ ok((await clearSiteScanRecord(null)) === false, 'clear null -> false');
     completedAt: 1,
     siteScan: { total: 0, urlStates: [] },
   });
-  ok((await writeSiteScanRecord(storage, record)) === true, 'write utk clear');
+  ok((await writeSiteScanRecord(storage, record)) === true, 'write before clear');
   ok((await clearSiteScanRecord(storage)) === true, 'clear -> true');
-  ok((await readSiteScanRecord(storage)) === null, 'read setelah clear -> null');
+  ok((await readSiteScanRecord(storage)) === null, 'read after clear -> null');
 }
 
-// --- storage yang throw -> false/null tanpa throw ------------------------------
+// --- throwing storage returns false/null without throwing --------------------
 {
   const bad = {
     get() {

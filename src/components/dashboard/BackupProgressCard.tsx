@@ -128,7 +128,7 @@ export function BackupProgressCard() {
                   <Badge variant="danger">cannot restore: API limitation</Badge>
                 )}
                 {line.pill === 'error' && (
-                  <Badge variant="danger">GAGAL (error)</Badge>
+                  <Badge variant="danger">FAILED (error)</Badge>
                 )}
               </div>
             ))}

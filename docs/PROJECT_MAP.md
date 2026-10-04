@@ -1,514 +1,515 @@
 # PROJECT MAP — Local Browser Backup & Restore
 
-> Peta seluruh project untuk keperluan **audit total**. Dibuat 2026-10-03 dari pembacaan
-> penuh 195 file (tidak termasuk `node_modules/`, `.output/`, `.wxt/`).
+> Complete project map for a **full audit**. Created on 2026-10-03 after reading
+> all 195 files (excluding `node_modules/`, `.output/`, `.wxt/`).
 > Total ~22.700 LOC: `src/` 16.310 · `tests/` 5.497 · `public/lib/` 884 · `scripts/` 35.
 >
-> Cara pakai: setiap file diringkas (tujuan, ekspor kunci, dependensi, risiko).
-> File **paling kritis untuk audit** ditandai 🔴. Tech debt yang sudah
-> didokumentasikan di config ditandai 🟡.
+> How to use: each file is summarized (purpose, key exports, dependencies, risks).
+> Files **most critical for the audit** are marked 🔴. Tech debt already
+> documented in config is marked 🟡.
 
-## Gambaran umum
+## Overview
 
-Extension Chrome MV3 (WXT + React 19) untuk **backup & restore data browser 100% lokal**
-(12 kategori), dengan opsi upload terenkripsi ke GitHub, scheduler otomatis, dan
-koleksi site-data (localStorage/IndexedDB/Cache/SW/OPFS per origin) via `chrome.debugger`.
+Chrome MV3 extension (WXT + React 19) for **100% local browser data backup & restore**
+(12 categories), with optional encrypted upload to GitHub, an automatic scheduler, and
+site-data collection (localStorage/IndexedDB/Cache/SW/OPFS per origin) via `chrome.debugger`.
 
-**Prinsip arsitektur yang konsisten di seluruh codebase:**
-- Pekerjaan berat berjalan di **halaman dashboard** (`dashboard.html`), BUKAN di service
-  worker — agar tidak dibunuh lifecycle MV3. Worker hanya menangani scheduler/alarm.
-- **Safety kernel tab** (`src/lib/tab-ownership.js`): satu-satunya `chrome.tabs.remove`
-  yang diizinkan, dijaga runtime guard + static test. Invariant: hanya tab milik operasi
-  yang boleh ditutup, hanya via `safeCloseTab`.
-- Modul tanpa `chrome.*` (crypto, format, util, validate, scheduler-decision, artifact)
-  murni dan bisa di-unit-test di Node.
-- Kebijakan keamanan dipaksakan **di kode**, bukan hanya di UI: token tidak pernah
-  dilog, repo publik wajib enkripsi, upload diverifikasi remote sebelum dinyatakan sukses.
+**Consistent architectural principles across the codebase:**
+- Heavy work runs in the **dashboard page** (`dashboard.html`), NOT in the service
+  worker, so it is not killed by the MV3 lifecycle. The worker handles only the scheduler/alarms.
+- **Tab safety kernel** (`src/lib/tab-ownership.js`): the only `chrome.tabs.remove`
+  allowed, protected by a runtime guard + static test. Invariant: only tabs owned by the operation
+  that may be closed, only via `safeCloseTab`.
+- Modules without `chrome.*` (crypto, format, util, validate, scheduler-decision, artifact)
+  are pure and can be unit-tested in Node.
+- Security policy is enforced **in code**, not only in the UI: token never
+  logged, public repositories require encryption, uploads are verified remotely before being declared successful.
 
-## Alur data utama
+## Main data flow
 
 ```
 collect.js (collectAll)
-  → sitedata.js / capabilities.js (kumpulkan data)
-  → format.js (skeleton + digest integritas)
-  → crypto.js (opsional: PBKDF2 600k → AES-256-GCM)
-  → artifact.js (artefak final + manifest)
-  → providers.js / github.js — diorkestrasi cloud.js (upload → VERIFIKASI remote)
-Restore: restore.js (+ sitedata.restoreSiteData) → API browser (non-destruktif default)
-Scheduler: scheduler.js (keputusan murni) → background.ts (alarm) → dashboard ?action=
+  → sitedata.js / capabilities.js (collect data)
+  → format.js (skeleton + integrity digest)
+  → crypto.js (optional: PBKDF2 600k → AES-256-GCM)
+  → artifact.js (final artifact + manifest)
+  → providers.js / github.js — orchestrated by cloud.js (upload → remote VERIFICATION)
+Restore: restore.js (+ sitedata.restoreSiteData) → browser APIs (non-destructive by default)
+Scheduler: scheduler.js (pure decision) → background.ts (alarm) → dashboard ?action=
 Dashboard: lib → callback/progress → store.patchState → useSyncExternalStore → render
 ```
 
 ---
 
-## 1. `src/lib/` — logika inti (22 file)
+## 1. `src/lib/` — core logic (22 files)
 
 ### src/lib/artifact.js
-- Tujuan: Membangun artefak backup remote — byte persis yang disimpan StorageProvider
-  (JSON v2 plaintext atau envelope terenkripsi) beserta manifest remote.
-- Ekspor kunci: `makeRemoteArtifact`, `manifestEntryFromArtifact`, `newRemoteManifest`,
+- Purpose: Builds remote backup artifact — the exact bytes stored StorageProvider
+  (JSON v2 plaintext or encrypted envelope) along with remote manifest.
+- Key exports: `makeRemoteArtifact`, `manifestEntryFromArtifact`, `newRemoteManifest`,
   `normalizeManifest`, `upsertManifestEntry`, `assertUploadSafe`, `ENCRYPTION_VERSION`.
-- Tergantung pada: `util.js`, `format.js`.
-- Catatan/risiko: Tanpa `chrome.*` (testable di Node). `assertUploadSafe` adalah gerbang
-  kebijakan upload (menolak plaintext ke repo publik).
+- Depends on: `util.js`, `format.js`.
+- Notes/risks: Without `chrome.*` (testable in Node). `assertUploadSafe` is the gate
+  upload policy (rejects plaintext to public repositories).
 
 ### src/lib/capabilities.js
-- Tujuan: Deteksi kapabilitas browser — kategori apa yang bisa read/backup/restore.
-  Satu-satunya sumber kebenaran untuk capability report dan UI.
-- Ekspor kunci: `getChromeVersion`, `detect`, `runProbes`.
-- Tergantung pada: `capability-probes.js`.
-- Catatan/risiko: Memakai `chrome.debugger`/`scripting`/dsb hanya untuk probing defensif.
+- Purpose: Detect browser capabilities — which categories can be read/backed up/restored.
+  The single source of truth for capability report and UI.
+- Key exports: `getChromeVersion`, `detect`, `runProbes`.
+- Depends on: `capability-probes.js`.
+- Notes/risks: Uses `chrome.debugger`/`scripting`/etc. only for defensive probing.
 
 ### src/lib/capability-probes.js
-- Tujuan: Probe runtime untuk menyempurnakan catatan kapabilitas statis.
-- Ekspor kunci: `runCapabilityProbes`.
-- Tergantung pada: `util.js`, `site-log.js`.
-- Catatan/risiko: Menyentuh API sensitif hanya untuk uji baca; gagal probe tidak fatal.
+- Purpose: Runtime probes to refine static capability notes.
+- Key exports: `runCapabilityProbes`.
+- Depends on: `util.js`, `site-log.js`.
+- Notes/risks: Touches sensitive APIs only for read tests; probe failures are non-fatal.
 
 ### src/lib/cloud.js 🔴
-- Tujuan: Orkestrator backup cloud — data → artefak → [enkripsi] → upload →
-  VERIFIKASI objek remote → update manifest. Salinan lokal durable selalu ditulis dulu.
-- Ekspor kunci: `runCloudBackup`, `beginScheduledRun`, `listCloudBackups`,
+- Purpose: Cloud-backup orchestrator — data → artifact → [encryption] → upload →
+  remote object VERIFICATION → update manifest. A durable local copy is always written first.
+- Key exports: `runCloudBackup`, `beginScheduledRun`, `listCloudBackups`,
   `downloadAndValidateBackup`, `createProviderFromConfig`, `redactConfig`,
   `getCloudRetryInfo`, `cancelPendingCloudRetry`, `restoreCloudRetryAlarm`.
-- Tergantung pada: `util.js`, `crypto.js`, `validate.js`, `artifact.js`, `providers.js`,
+- Depends on: `util.js`, `crypto.js`, `validate.js`, `artifact.js`, `providers.js`,
   `github.js`, `scheduler.js`.
-- Catatan/risiko: 🟡 **Kompleksitas tertinggi kedua (`runCloudBackup`: 77)** — tech debt
-  terdokumentasi. Password tidak pernah disimpan/dilog. Upload gagal → marker pending,
-  run berikutnya re-sync artefak yang sama (tanpa re-collect).
+- Notes/risks: 🟡 **Second-highest complexity (`runCloudBackup`: 77)** — tech debt
+  documented. Passwords are never stored/logged. A failed upload → marker pending,
+  the next run re-syncs the same artifact (without re-collecting).
 
 ### src/lib/collect.js
-- Tujuan: Kolektor semua kategori backup via API ekstensi publik → format dokumen.
-- Ekspor kunci: `collectAll`, `computeCounts`.
-- Tergantung pada: `util.js`, `capabilities.js`, `sitedata.js`.
-- Catatan/risiko: Menyentuh API paling luas (readingList, sessions, history, cookies,
-  tabGroups, windows, tabs, storage, management, downloads). Cookie value tidak dilog;
-  incognito dikecualikan by design.
+- Purpose: Collector for all backup categories via public extension APIs → format document.
+- Key exports: `collectAll`, `computeCounts`.
+- Depends on: `util.js`, `capabilities.js`, `sitedata.js`.
+- Notes/risks: Touches the broadest set of APIs (readingList, sessions, history, cookies,
+  tabGroups, windows, tabs, storage, management, downloads). Cookie values are not logged;
+  incognito excluded by design.
 
 ### src/lib/crypto.js 🔴
-- Tujuan: Enkripsi backup — PBKDF2-HMAC-SHA-256 (600k iterasi) → AES-256-GCM dengan
-  additional data mengikat header envelope. Murni Web Crypto.
-- Ekspor kunci: `encryptBackup`, `decryptBackup`.
-- Tergantung pada: `util.js`, `artifact.js`.
-- Catatan/risiko: Tanpa `chrome.*`, kecil dan terisolasi. Kritis untuk keamanan.
-  ⚠️ Tidak punya unit test khusus (hanya teruji via E2E round-trip).
+- Purpose: Backup encryption — PBKDF2-HMAC-SHA-256 (600k iterations) → AES-256-GCM with
+  additional data binds the envelope header. Pure Web Crypto.
+- Key exports: `encryptBackup`, `decryptBackup`.
+- Depends on: `util.js`, `artifact.js`.
+- Notes/risks: Without `chrome.*`, small and isolated. Critical for security.
+  ⚠️ Has no dedicated unit tests (tested only via E2E round-trip).
 
 ### src/lib/format.js
-- Tujuan: Konstanta format backup v2, skeleton backup baru, digest integritas.
-- Ekspor kunci: `FORMAT_ID`, `ENCRYPTED_FORMAT_ID`, `FORMAT_VERSION`,
+- Purpose: Backup format v2 constants, new-backup skeleton, and integrity digest.
+- Key exports: `FORMAT_ID`, `ENCRYPTED_FORMAT_ID`, `FORMAT_VERSION`,
   `SUPPORTED_FORMAT_VERSIONS`, `newBackupSkeleton`, `finalizeIntegrity`, `verifyIntegrity`.
-- Tergantung pada: `util.js`.
-- Catatan/risiko: Tanpa `chrome.*`. v1 tetap bisa dibaca (upgrade transparan).
+- Depends on: `util.js`.
+- Notes/risks: Without `chrome.*`. v1 remains readable (transparent upgrade).
 
 ### src/lib/github.js 🔴
-- Tujuan: `GitHubStorageProvider` — backup cloud via GitHub Contents API. Upload
-  dipaksa terverifikasi (re-download + sha256 + bandingkan git blob sha).
-- Ekspor kunci: `GitHubStorageProvider`.
-- Tergantung pada: `util.js`, `artifact.js`, `providers.js`.
-- Catatan/risiko: Token PAT hanya di header `Authorization`, tidak pernah dilog/masuk
-  artefak. Repo publik → enkripsi WAJIB.
+- Purpose: `GitHubStorageProvider` — backup cloud via GitHub Contents API. Upload
+  forced to be verified (re-download + sha256 + compare git blob sha).
+- Key exports: `GitHubStorageProvider`.
+- Depends on: `util.js`, `artifact.js`, `providers.js`.
+- Notes/risks: PAT tokens are only in the header `Authorization`, never logged/included
+  artifacts. Public repositories → encryption REQUIRED.
 
 ### src/lib/providers.js
-- Tujuan: Kontrak `StorageProvider` + `LocalStorageProvider` + `BackupRef`.
-- Ekspor kunci: `StorageProvider`, `BackupRef`, `LocalStorageProvider`.
-- Tergantung pada: `util.js`, `artifact.js`.
-- Catatan/risiko: Provider hanya beroperasi pada artefak final, tidak pada data mentah.
+- Purpose: Contract `StorageProvider` + `LocalStorageProvider` + `BackupRef`.
+- Key exports: `StorageProvider`, `BackupRef`, `LocalStorageProvider`.
+- Depends on: `util.js`, `artifact.js`.
+- Notes/risks: Providers operate only on final artifacts, not in raw data.
 
 ### src/lib/restore.js 🔴
-- Tujuan: Mesin restore — default NON-DESTRUKTIF (bookmark merge, tab/window/session
-  dibuat baru). Mode "replace" hanya untuk bookmark + butuh konfirmasi eksplisit.
-- Ekspor kunci: `restoreTabsWindows`, `restoreAll`.
-- Tergantung pada: `util.js`, `sitedata.js`.
-- Catatan/risiko: 🟡 Kompleksitas tinggi (`restoreTabsWindows`: 37, `restoreCookies`: 33).
-  Menulis ke data browser user — harus tetap non-destruktif. Placeholder tab window-restore
-  ditutup hanya via `safeCloseTab` dengan verify `windowId`.
+- Purpose: Restore engine — default NON-DESTRUCTIVE (bookmark merging, tab/window/session
+  created as new objects). Mode "replace" only for bookmark + requires explicit confirmation.
+- Key exports: `restoreTabsWindows`, `restoreAll`.
+- Depends on: `util.js`, `sitedata.js`.
+- Notes/risks: 🟡 High complexity (`restoreTabsWindows`: 37, `restoreCookies`: 33).
+  Writes to the user’s browser data and must remain non-destructive. Placeholder tab window-restore
+  closed only via `safeCloseTab` with `windowId`.
 
 ### src/lib/scan-concurrency.js
-- Tujuan: Primitif konkurensi crawler site-data — slot pool (hard tab window), antrean
-  handoff worker, monitor adaptif CPU/load.
-- Ekspor kunci: `clampScanWindow`, `clampInt`, `createSlotPool`, `createAsyncQueue`,
+- Purpose: Site-data crawler concurrency primitives — slot pool (hard tab-window limit), queue
+  handoff worker, and adaptive CPU/load monitoring.
+- Key exports: `clampScanWindow`, `clampInt`, `createSlotPool`, `createAsyncQueue`,
   `createSystemCpuSampler`, `createLoadMonitor`, `startCpuMonitor`.
-- Tergantung pada: `scan-config.js`.
-- Catatan/risiko: Satu-satunya pengguna `chrome.system.cpu`. Window tidak pernah < 2;
-  turun cepat / naik lambat (anti-osilasi).
+- Depends on: `scan-config.js`.
+- Notes/risks: the only module that uses `chrome.system.cpu`. Window never < 2;
+  decreases quickly / increases slowly (anti-oscillation).
 
 ### src/lib/scan-config.js
-- Tujuan: Satu objek tuning terpusat `SITE_DATA_CONFIG` (window, konkurensi, timeout,
-  exclusion, retry, stop, storage). Modul data murni — tidak bisa menimbulkan cycle.
-- Ekspor kunci: `SITE_DATA_CONFIG`.
-- Tergantung pada: tidak ada.
-- Catatan/risiko: Audit tuning cukup baca file ini.
+- Purpose: Single centralized tuning object `SITE_DATA_CONFIG` (window, concurrency, timeout,
+  exclusion, retry, stop, storage). Pure data module — cannot create cycles.
+- Key exports: `SITE_DATA_CONFIG`.
+- Depends on: none.
+- Notes/risks: To audit the tuning, read this file.
 
 ### src/lib/scan-groups.js
-- Tujuan: Manajer grup tab — satu grup "BBR Site Scan" + fallback "BBR Site Error"
-  (merah) untuk tab yang gagal masuk grup scan.
-- Ekspor kunci: `createGroupManager`, `SCAN_ERROR_GROUP_TITLE`, `SCAN_ERROR_GROUP_COLOR`.
-- Tergantung pada: tidak ada.
-- Catatan/risiko: Grup tidak pernah dihapus langsung — hilang saat tab terakhir ditutup.
-  Tab milik user tidak pernah di-group.
+- Purpose: Tab-group manager — one group "BBR Site Scan" + fallback "BBR Site Error"
+  (red) for tabs that fail to join the scan group.
+- Key exports: `createGroupManager`, `SCAN_ERROR_GROUP_TITLE`, `SCAN_ERROR_GROUP_COLOR`.
+- Depends on: none.
+- Notes/risks: The group is never deleted directly — gone when tab last closed.
+  User tabs are never grouped.
 
 ### src/lib/scheduler.js
-- Tujuan: Scheduler backup otomatis — fungsi keputusan MURNI (testable di Node) +
-  helper config/state via `chrome.storage`.
-- Ekspor kunci: `normalizeScheduleConfig`, `isBackupDue`, `loadSchedulerState`,
-  `saveSchedulerState`, `isLocked`, `cloudRetryDelayMs`, konstanta alarm.
-- Tergantung pada: tidak ada (diimpor `cloud.js`).
-- Catatan/risiko: "Due" dihitung dari backup SUKSES terakhir → gagal = retry backoff,
-  sukses = tidak duplikat.
+- Purpose: Automatic backup scheduler — PURE decision functions (testable in Node) +
+  config/state helpers via `chrome.storage`.
+- Key exports: `normalizeScheduleConfig`, `isBackupDue`, `loadSchedulerState`,
+  `saveSchedulerState`, `isLocked`, `cloudRetryDelayMs`, alarm constants.
+- Depends on: none (although `cloud.js` imports it).
+- Notes/risks: "Due" is calculated from the last SUCCESSFUL backup → failures trigger retry backoff;
+  successful backups are not duplicated.
 
 ### src/lib/settings.js
-- Tujuan: Ekspor/impor pengaturan.
-- Ekspor kunci: `buildSettingsExport`, `parseSettingsImport`.
-- Tergantung pada: `cloud.js`.
-- Catatan/risiko: **Token-safe**: saat impor, token GitHub dari file TIDAK dipakai —
-  token saat ini dipertahankan.
+- Purpose: Settings export/import.
+- Key exports: `buildSettingsExport`, `parseSettingsImport`.
+- Depends on: `cloud.js`.
+- Notes/risks: **Token-safe**: during import, the GitHub token from the file is not used —
+  the current token is retained.
 
 ### src/lib/site-data-selection.js
-- Tujuan: Helper filter/pilih origin site-data untuk UI.
-- Ekspor kunci: `filterSiteDataOrigins`, `getSelectedSiteDataOrigins`.
-- Tergantung pada: tidak ada. Risiko praktis nol (16 baris, murni).
+- Purpose: Helper to filter/select site-data origins for the UI.
+- Key exports: `filterSiteDataOrigins`, `getSelectedSiteDataOrigins`.
+- Depends on: none. Practically zero risk (16 lines, pure).
 
 ### src/lib/site-log.js
-- Tujuan: Logging terpusat crawl — `log(level, category, message, context)`,
-  level DEBUG–FATAL, kategori W1/W2/STORAGE/CPU/LOAD/SAFETY/RETRY/SYSTEM. Buffer + batch
-  ke IndexedDB (cap 5000); gagal tulis tidak menghentikan crawl.
-- Ekspor kunci: `createSiteLogger`, `querySiteLog`, `clearPersistedSiteLog`,
+- Purpose: Centralized crawl logging — `log(level, category, message, context)`,
+  level DEBUG–FATAL, categories W1/W2/STORAGE/CPU/LOAD/SAFETY/RETRY/SYSTEM. Buffer + batch
+  to IndexedDB (cap 5000); write failures do not stop the crawl.
+- Key exports: `createSiteLogger`, `querySiteLog`, `clearPersistedSiteLog`,
   `selectLogEntriesToTrim`, `formatLogTs`, `LOG_LEVELS`, `LOG_CATEGORIES`.
-- Tergantung pada: tidak ada.
+- Depends on: none.
 
 ### src/lib/sitedata.js 🔴
-- Tujuan: Kolektor site-data — pipeline dua worker (W1 buka tab scan ≤ window →
-  grup; W2 baca via `chrome.debugger` 4 konkuren → tutup tab). Failed pool + retry
-  waves, storage retry terpisah, URL exclusion, clean stop, checkpoint resume,
-  adaptive window, logging terpusat. Juga `restoreSiteData`.
-- Ekspor kunci: `collectSiteData`, `restoreSiteData`, `discoverOrigins`,
+- Purpose: Site-data collector — two-worker pipeline (W1 opens scan tabs ≤ window →
+  groups; W2 reads via `chrome.debugger` with 4 concurrent workers → close tabs). Failed pool + retry
+  waves, separate storage retry, URL exclusion, clean stop, checkpoint resume,
+  adaptive window, centralized logging. Also `restoreSiteData`.
+- Key exports: `collectSiteData`, `restoreSiteData`, `discoverOrigins`,
   `filterSiteDataOriginsForBackup`, `isExcluded`, `computeSiteDataCounts`
-  (+ re-export modul pecahan: `SITE_DATA_CONFIG`, `createTabOwnership`, `verifyScanTab`,
+  (+ re-export split modules: `SITE_DATA_CONFIG`, `createTabOwnership`, `verifyScanTab`,
   `createSiteDataOwnership`, `cleanupPreviousSessionTabs`, `createSlotPool`, …).
-- Tergantung pada: `util.js`, `site-log.js`, `scan-config.js`, `tab-ownership.js`,
+- Depends on: `util.js`, `site-log.js`, `scan-config.js`, `tab-ownership.js`,
   `scan-groups.js`, `scan-concurrency.js`.
-- Catatan/risiko: 🟡 **File terbesar (2138 baris) dan kompleksitas tertinggi
-  (`collectSiteData`: 65)**. API sensitif: `chrome.debugger`, `chrome.scripting`.
-  Invariant tab: hanya milik operasi via `safeCloseTab`.
+- Notes/risks: 🟡 **Largest file (2138 lines) and highest complexity
+  (`collectSiteData`: 65)**. Sensitive APIs: `chrome.debugger`, `chrome.scripting`.
+  Tab invariant: owned by the operation via `safeCloseTab`.
 
 ### src/lib/tab-ownership.js 🔴
-- Tujuan: **Safety kernel tab** — satu-satunya `chrome.tabs.remove` yang diizinkan
-  (via `safeCloseTab`), dijaga runtime guard anti-bypass. `verifyScanTab` memastikan
-  tab masih menampilkan halaman scan (atau `failed` untuk chrome-error) sebelum tutup;
-  `origin=''` = origin tak diketahui (crash-recovery) → cocok marker saja.
-- Ekspor kunci: `createTabOwnership`, `verifyScanTab`, `createSiteDataOwnership`,
+- Purpose: **Tab safety kernel** — the only `chrome.tabs.remove` allowed
+  (via `safeCloseTab`), protected by an anti-bypass runtime guard. `verifyScanTab` ensures
+  tab still displays scan page (or `failed` for chrome-error) before closing;
+  `origin=''` = origin unknown (crash-recovery) → match the marker only.
+- Key exports: `createTabOwnership`, `verifyScanTab`, `createSiteDataOwnership`,
   `cleanupPreviousSessionTabs`, `originOf`, `scanUrlFor`, `SCAN_MARKER`.
-- Tergantung pada: `site-log.js`, `scan-config.js`.
-- Catatan/risiko: **Paling kritis untuk keselamatan data user.** Cleanup by recorded-ID
-  only, tidak pernah by query/grup. `closingTabIds`/`ownedTabIds` dibersihkan di finally.
+- Depends on: `site-log.js`, `scan-config.js`.
+- Notes/risks: **Most critical for user-data safety.** Cleanup by recorded-ID
+  only, never by query/group. `closingTabIds`/`ownedTabIds` cleared in finally.
 
 ### src/lib/util.js
-- Tujuan: Utilitas dasar — `TypedError`, canonicalize JSON, base64, sha256, gzip,
+- Purpose: Basic utilities — `TypedError`, canonicalize JSON, base64, sha256, gzip,
   `yieldToUI`, `errCode`/`errMessage`.
-- Ekspor kunci: `TypedError`, `canonicalize`, `sha256Hex`, `bytesToB64`/`b64ToBytes`,
+- Key exports: `TypedError`, `canonicalize`, `sha256Hex`, `bytesToB64`/`b64ToBytes`,
   `gzipCompress`/`gzipDecompress`, `yieldToUI`, `errCode`, `errMessage`.
-- Tergantung pada: tidak ada (diimpor 9 file).
-- Catatan/risiko: `TypedError` adalah fondasi error handling bertipe seluruh codebase.
+- Depends on: none (imported 9 files).
+- Notes/risks: `TypedError` is the foundation for typed error handling across the codebase.
 
 ### src/lib/validate.js
-- Tujuan: Validasi file backup — struktur, versi, digest, sanity semantik. Error bertipe
-  (salah-password vs korup vs versi tak didukung).
-- Ekspor kunci: `validateBackupFile`.
-- Tergantung pada: `util.js`, `format.js`, `crypto.js`.
-- Catatan/risiko: ⚠️ Tidak punya unit test khusus.
+- Purpose: Backup-file validation — structure, version, digest, semantic sanity. Typed errors
+  (wrong password vs. corruption vs. unsupported version).
+- Key exports: `validateBackupFile`.
+- Depends on: `util.js`, `format.js`, `crypto.js`.
+- Notes/risks: ⚠️ Has no dedicated unit tests.
 
 ### src/lib/utils.ts
-- Tujuan: Helper `cn()` untuk merge class Tailwind (clsx + tailwind-merge), standar shadcn.
-- Ekspor kunci: `cn`. Satu-satunya file yang mengimpor dependensi npm langsung.
+- Purpose: Helper `cn()` for merge class Tailwind (clsx + tailwind-merge), shadcn standard.
+- Key exports: `cn`. The only file that directly imports an npm dependency.
 
 ---
 
 ## 2. UI — `src/entrypoints/`, `src/dashboard/`, `src/components/dashboard/`
 
 ### src/entrypoints/background.ts
-- Tujuan: Service worker MV3 yang disengaja minimal — hanya scheduler: alarm periodik,
-  evaluasi jadwal backup cloud (termasuk catch-up), retry upload tertunda.
-- Ekspor kunci: `defineBackground(...)` — handler `onInstalled`/`onStartup`/`onAlarm`/
+- Purpose: Minimal MV3 service worker that handles only the scheduler: periodic alarms,
+  evaluates the cloud-backup schedule (including catch-up), retry pending uploads.
+- Key exports: `defineBackground(...)` — handler `onInstalled`/`onStartup`/`onAlarm`/
   `onMessage`; `checkScheduleAndRun()`, `checkCloudRetryAndRun()`.
-- Tergantung pada: `@/lib/scheduler`, `@/lib/cloud`.
-- Catatan/risiko: Pekerjaan berat TIDAK di worker — worker hanya membuka
-  `dashboard.html?action=…` sebagai tab background. Guard anti-duplikat tab scheduled-run.
+- Depends on: `@/lib/scheduler`, `@/lib/cloud`.
+- Notes/risks: Heavy work is not in the worker — worker only opens
+  `dashboard.html?action=…` as a background tab. Guard against duplicate scheduled-run tabs.
 
 ### src/entrypoints/dashboard/main.tsx
-- Tujuan: Boot dashboard: tema anti-flash → `window.__api` untuk tes → cleanup tab sisa
-  sesi lalu → render `<App/>`.
-- Ekspor kunci: tidak ada (side-effect): `initThemeSync()`, `installTestHooks()`,
+- Purpose: Boot dashboard: anti-flash theme → `window.__api` for tests → cleanup remaining session tabs,
+  then → render `<App/>`.
+- Key exports: none (side-effect): `initThemeSync()`, `installTestHooks()`,
   `cleanupPreviousSession()`, listener `beforeunload` best-effort.
-- Tergantung pada: `./App`, `@/dashboard/api`, `@/dashboard/theme`,
+- Depends on: `./App`, `@/dashboard/api`, `@/dashboard/theme`,
   `@/dashboard/site-log-store`, `@/lib/sitedata` (dynamic import).
-- Catatan/risiko: `beforeunload` async sering tidak selesai — jaring pengaman sebenarnya
-  adalah cleanup saat dashboard dibuka ulang.
+- Notes/risks: `beforeunload` async often does not finish — the real safety net
+  is cleanup when the dashboard is reopened.
 
 ### src/entrypoints/dashboard/App.tsx
-- Tujuan: Shell React: header, hash-routing 6 halaman dalam SATU `dashboard.html`,
-  error boundary per chunk lazy, dialog password, toaster.
-- Ekspor kunci: `App`, `useHashRoute()`, `RouteChunkErrorBoundary`, `NAV`.
-- Tergantung pada: `@/dashboard/store`, `@/dashboard/lazy-route`, `@/dashboard/theme`,
-  komponen Header/pages (5 halaman lazy).
-- Catatan/risiko: Hash routing disengaja agar konteks JS crawl tidak hancur saat pindah
-  halaman. `?action=` memicu `cloud-ui.init()` (scheduled/retry auto-start).
+- Purpose: Shell React: header, hash-routing 6 pages in one `dashboard.html`,
+  error boundary per chunk lazy, password dialog, toaster.
+- Key exports: `App`, `useHashRoute()`, `RouteChunkErrorBoundary`, `NAV`.
+- Depends on: `@/dashboard/store`, `@/dashboard/lazy-route`, `@/dashboard/theme`,
+  Header/pages components (5 lazy pages).
+- Notes/risks: Hash routing is intentional so that crawl JS context is not destroyed when changing
+  pages. `?action=` triggers `cloud-ui.init()` (scheduled/retry auto-start).
 
 ### src/dashboard/store.ts
-- Tujuan: Store eksternal tunggal (`useSyncExternalStore`) — satu-satunya sumber
-  kebenaran semua halaman.
-- Ekspor kunci: tipe `AppState`, `useApp()`, `getState/setState/patchState/updateForm/
+- Purpose: Single external store (`useSyncExternalStore`) — the only source
+  of truth for all pages.
+- Key exports: `AppState` type, `useApp()`, `getState/setState/patchState/updateForm/
   appendLog`, `withDashboardActivity()` (mutual exclusion via Web Locks +
   BroadcastChannel), `hasUnresolvedSiteScan()`.
-- Tergantung pada: react saja.
-- Catatan/risiko: Hanya satu operasi berat dalam satu waktu antar tab dashboard.
-  Clear Results/Logs fail-closed bila Web Locks tak tersedia.
+- Depends on: React only.
+- Notes/risks: only one heavy operation at a time across dashboard tabs.
+  Clear Results/Logs fail-closed if Web Locks is unavailable.
 
 ### src/dashboard/api.ts + api-operations.ts
-- Tujuan: Permukaan otomasi `window.__api` untuk E2E/UI + implementasi operasinya
+- Purpose: Automation surface `window.__api` for E2E/UI + its operation implementations
   (probe, collectAll, backup, cloud, scheduler, restore, seed helpers).
-- Ekspor kunci: `installTestHooks()`; namespace `__api.*`.
-- Tergantung pada: `./store`, `./logic`, `@/lib/{collect,cloud,restore,validate,
+- Key exports: `installTestHooks()`; namespace `__api.*`.
+- Depends on: `./store`, `./logic`, `@/lib/{collect,cloud,restore,validate,
   capabilities,scheduler,crypto,util}`.
-- Catatan/risiko: 🟡 `@ts-nocheck` (tech debt). `seed.*` memanipulasi tab/window asli —
-  hanya untuk tes.
+- Notes/risks: 🟡 `@ts-nocheck` (tech debt). `seed.*` manipulates real tabs/windows —
+  only for tests.
 
 ### src/dashboard/logic.ts 🟡
-- Tujuan: Orkestrator operasi dashboard: build backup, doBackup + stop, download
-  on-demand (tanpa auto-download), retry site-data, dialog password, alur restore,
+- Purpose: Dashboard-operation orchestrator: build backup, doBackup + stop, download
+  on-demand (without auto-download), retry site-data, password dialog, restore flow,
   capabilities, clear results.
-- Ekspor kunci: `doBackup`, `buildBackupObject/buildCloudBackupObject`,
+- Key exports: `doBackup`, `buildBackupObject/buildCloudBackupObject`,
   `downloadBackupResult`, `retrySiteDataUrls/retrySiteDataSave`, `askPassword`,
   `openRestoreFlow/onRestoreGo`, `showCapabilities`, `clearBackupResults`,
   `requestBackupStop`.
-- Tergantung pada: `./store`, `./backup-categories`, `./site-log-store`,
+- Depends on: `./store`, `./backup-categories`, `./site-log-store`,
   `@/lib/{collect,restore,sitedata,format,crypto,validate,capabilities}`.
-- Catatan/risiko: Hasil backup di memori + extension storage; tombol "Download hasil"
-  eksplisit; Blob dibangun inkremental. Salah satu dari 13 type error yang belum
-  dibereskan (lihat Memory 2026-10-02).
+- Notes/risks: Backup results are held in memory + extension storage; the "Download results" button
+  is explicit; Blob is built incrementally. One of 13 remaining type errors has not yet been
+  fixed (see Memory 2026-10-02).
 
 ### src/dashboard/cloud-ui.ts 🟡
-- Tujuan: Logika UI cloud: connect GitHub, backup manual/terjadwal/retry, remote
+- Purpose: Cloud UI logic: connect GitHub, backup manual/scheduled/retry, remote
   list/restore/delete, export/import settings, auto-start via `?action=`.
-- Ekspor kunci: `init()`, `onCloudConnect`, `onCloudBackupNow`, `onCloudRestore`,
+- Key exports: `init()`, `onCloudConnect`, `onCloudBackupNow`, `onCloudRestore`,
   `onRetrySync`, `exportSettingsFile/importSettingsFile`, `saveCloudSettings`.
-- Tergantung pada: `./store`, `./logic`, `@/lib/{cloud,github,providers,scheduler,
+- Depends on: `./store`, `./logic`, `@/lib/{cloud,github,providers,scheduler,
   settings,util,capabilities}`.
-- Catatan/risiko: 🟡 `@ts-nocheck`. Token dikosongkan dari form setelah save; hanya di
-  memori + storage config. Plaintext upload butuh `confirm()` + hanya repo private
-  (enforcement nyata di storage layer).
+- Notes/risks: 🟡 `@ts-nocheck`. The token is cleared from the form after save; only in
+  memory + storage config. Plaintext upload requires `confirm()` + private repositories only
+  (actual enforcement in storage layer).
 
 ### src/dashboard/backup-categories.ts
-- Tujuan: Definisi 12 kategori backup + persistensi preferensi (`chrome.storage.local`):
-  kategori terpilih, origin situs, scan window, tuning crawl, include
+- Purpose: Definition of 12 backup categories + preference persistence (`chrome.storage.local`):
+  selected categories, site origins, scan window, crawl tuning, include
   sessionStorage/serviceWorkers.
-- Ekspor kunci: `BACKUP_CATEGORIES`, load/save untuk kategori, origin, window, tuning.
-- Tergantung pada: `@/lib/sitedata` (`SITE_DATA_CONFIG` sebagai batas tunggal).
-- Catatan/risiko: 🟡 `@ts-nocheck`. Semua nilai di-clamp saat load (aman dari storage
-  korup). sessionStorage/serviceWorkers default OFF (keterbatasan platform).
+- Key exports: `BACKUP_CATEGORIES`, load/save for categories, origin, window, tuning.
+- Depends on: `@/lib/sitedata` (`SITE_DATA_CONFIG` as single boundary).
+- Notes/risks: 🟡 `@ts-nocheck`. All values are clamped on load (safe from storage
+  corruption). sessionStorage/serviceWorkers default OFF (platform limitation).
 
 ### src/dashboard/lazy-route.ts
-- Tujuan: Loader chunk route lazy dengan pemulihan satu-kali (reload sekali, guard di
-  sessionStorage agar tidak loop).
-- Ekspor kunci: `loadRouteChunk`, `retryRouteChunk`.
-- Tergantung pada: tidak ada (murni; window.sessionStorage/location bisa di-inject
-  untuk tes).
+- Purpose: Lazy route chunk loader with one-time recovery (reload once, guarded in
+  sessionStorage to prevent loops).
+- Key exports: `loadRouteChunk`, `retryRouteChunk`.
+- Depends on: none (pure; window.sessionStorage/location can be injected
+  for tests).
 
 ### src/dashboard/site-log-store.ts
-- Tujuan: Store live site-log crawl: entri live + IndexedDB, flag error-belum-dilihat,
-  clear lintas tab.
-- Ekspor kunci: `pushSiteLogEntry`, `useSiteLog()`, `useUnseenSiteLogError()`,
+- Purpose: Store live site-log crawl: entries live + IndexedDB, flag error-unseen,
+  cross-tab clearing.
+- Key exports: `pushSiteLogEntry`, `useSiteLog()`, `useUnseenSiteLogError()`,
   `markSiteLogSeen()`, `clearSiteLogView()`, `loadPersistedSiteLog()`.
-- Tergantung pada: `@/lib/site-log`, `./store`, BroadcastChannel.
-- Catatan/risiko: Buffer live 2000 entri; clear lintas tab via BroadcastChannel.
+- Depends on: `@/lib/site-log`, `./store`, BroadcastChannel.
+- Notes/risks: Buffer live 2000 entries; cross-tab clearing via BroadcastChannel.
 
 ### src/dashboard/theme.ts
-- Tujuan: Tema light/dark/system — persist `chrome.storage.local` + mirror sinkron
-  `window.localStorage` agar class `dark` terpasang sebelum first paint.
-- Ekspor kunci: `initThemeSync()`, `loadTheme()`, `setTheme()`, `watchSystemTheme()`,
+- Purpose: Light/dark/system theme — persisted in `chrome.storage.local` + synchronous mirror
+  `window.localStorage` so that class `dark` applied before the first paint.
+- Key exports: `initThemeSync()`, `loadTheme()`, `setTheme()`, `watchSystemTheme()`,
   `useTheme()`, `useResolvedTheme()`.
-- Tergantung pada: react, matchMedia, chrome.storage.local.
+- Depends on: react, matchMedia, chrome.storage.local.
 
-### src/components/dashboard/ (23 file)
-Halaman dan kartu — semuanya presentasional, state via `useApp()`:
+### src/components/dashboard/ (23 files)
+Pages and cards — all presentational, state via `useApp()`:
 - `pages.tsx` (`SummaryPage`), `SettingsPage.tsx`, `ResultsPage.tsx`, `FailuresPage.tsx`,
-  `LogPage.tsx`, `MorePage.tsx` — komposisi per halaman (5 di antaranya lazy).
+  `LogPage.tsx`, `MorePage.tsx` — page composition (5 of them lazy).
 - `Header.tsx`, `ThemeToggle.tsx`, `LocalActionsCard.tsx`, `BackupProgressCard.tsx`,
-  `CrawlStatusBar.tsx`, `DownloadResultButton.tsx` — ringkasan & progres.
+  `CrawlStatusBar.tsx`, `DownloadResultButton.tsx` — summary & progress.
 - `BackupCategoriesCard.tsx`, `SiteDataSelectionCard.tsx`, `SiteDataTuningCard.tsx` —
-  pengaturan.
-- `SiteResultsList.tsx`, `SiteFailuresList.tsx` — hasil & retry per item
-  (save-failed hanya disimpan ulang, tidak diambil ulang).
-- `SiteLogViewer.tsx`, `LogCard.tsx` — penampil log terstruktur + log mentah.
+  settings.
+- `SiteResultsList.tsx`, `SiteFailuresList.tsx` — results & retry per item
+  (save-failed only saved again, not re-fetched).
+- `SiteLogViewer.tsx`, `LogCard.tsx` — structured-log viewer + raw logs.
 - `RestoreCard.tsx`, `CloudCard.tsx`, `CapabilitiesCard.tsx`, `PasswordDialog.tsx`.
-- Catatan/risiko: Banyak akses `(scan as any)` ke field liveStats dinamis di
-  `CrawlStatusBar`/`BackupProgressCard` — longgar terhadap tipe; berisiko silent bila
-  nama field berubah di lib. Filter peringatan keamanan di `LogPage` berbasis regex —
-  rapuh bila format pesan berubah. Beberapa file `@ts-nocheck`.
+- Notes/risks: Many accesses `(scan as any)` read the dynamic `liveStats` field in
+  `CrawlStatusBar`/`BackupProgressCard` — loose typing risks silent failures if
+  field names change in the library. The `LogPage` security-warning filter is regex-based and
+  fragile if the message format changes. Some files `@ts-nocheck`.
 
-### src/components/ui/ (14 file, ~709 baris)
-Satu set shadcn/ui gaya `new-york` berbasis Radix (badge, button, card, checkbox,
+### src/components/ui/ (14 files, ~709 lines)
+A set of shadcn/ui components styled `new-york` based Radix (badge, button, card, checkbox,
 dialog, input, label, progress, radio-group, select, separator, sonner, table) —
-wrapper tipis `cva` + `cn()`. Murni presentasional, tanpa logika bisnis.
+thin wrapper `cva` + `cn()`. Purely presentational, without business logic.
 
 ---
 
-## 3. Konfigurasi, scripts, public
+## 3. Configuration, scripts, public
 
 ### package.json
-- Isi: `local-browser-backup-extension` v1.4.7, `type: module`, `private: true`.
-  Dependencies runtime hanya 4: `wxt`, `@wxt-dev/module-react`, `react`, `react-dom`.
-- Scripts: `dev`/`build`/`zip` (wxt); `test:node` (19 skrip Node mandiri); `test:ui`;
-  `test:e2e` (6 skrip E2E); `lint` (eslint src, zero-warning); `typecheck`
+- Contents: `local-browser-backup-extension` v1.4.7, `type: module`, `private: true`.
+  Only four runtime dependencies: `wxt`, `@wxt-dev/module-react`, `react`, `react-dom`.
+- Scripts: `dev`/`build`/`zip` (wxt); `test:node` (19 standalone Node scripts); `test:ui`;
+  `test:e2e` (6 E2E scripts); `lint` (eslint src, zero-warning); `typecheck`
   (tsc + tsconfig.check.json); `format:check`/`format:write` (prettier src/);
   `check` = lint + typecheck + format:check; `cycles` (madge); `knip`.
 - Key `"prettier"`: printWidth 80, semi, singleQuote, tabWidth 2, trailingComma es5
-  (dipindah dari `.prettierrc.json` 2026-10-03; prettier auto-discovery).
-- Catatan: `npm run check` tidak mencakup tes — itu di pre-commit/CI.
+  (moved from `.prettierrc.json` 2026-10-03; prettier auto-discovery).
+- Note: `npm run check` does not include tests — that is in pre-commit/CI.
 
 ### wxt.config.ts
-- Isi: Konfigurasi build WXT + modul React + plugin Tailwind (vite). Manifest:
-  `key` publik tetap (extension ID deterministik), `minimum_chrome_version` 114,
-  15 permission (bookmarks, history, tabs, tabGroups, sessions, cookies, downloads,
+- Contents: Build configuration WXT + React module + plugin Tailwind (vite). Manifest:
+  `key` public key remains (extension ID deterministic), `minimum_chrome_version` 114,
+  15 permissions (bookmarks, history, tabs, tabGroups, sessions, cookies, downloads,
   readingList, storage, unlimitedStorage, management, scripting, debugger, alarms,
-  system.cpu), `host_permissions` http/https, action tanpa popup (membuka dashboard).
+  system.cpu), `host_permissions` http/https, action without a popup (opens dashboard).
 
 ### tsconfig.json / tsconfig.check.json / tsconfig.madge.json
 - `tsconfig.json`: `strict: true` + `checkJs: true`, `noUncheckedIndexedAccess`,
   `noUnusedLocals/Parameters`, `exactOptionalPropertyTypes`; extends `.wxt/tsconfig.json`.
-- `tsconfig.check.json`: extends di atas tapi `checkJs: false`, include hanya
-  TS/TSX — inilah yang dipakai `npm run typecheck` (file JS di-cover ESLint type-aware).
-- `tsconfig.madge.json`: hanya alias `paths` agar madge bisa resolve import.
+- `tsconfig.check.json`: extends the above, but `checkJs: false`, include only
+  TS/TSX — this is what `npm run typecheck` uses (JS files are covered by ESLint type-aware).
+- `tsconfig.madge.json`: only the `paths` alias so that madge can resolve imports.
 
 ### eslint.config.mjs
-- Isi: Flat config — `js.configs.recommended` + `typescript-eslint` (4 aturan type-aware
+- Contents: Flat config — `js.configs.recommended` + `typescript-eslint` (4 type-aware rules
   manual: `no-floating-promises`, `no-misused-promises`, `await-thenable`,
   `require-await`) + `eslint-plugin-import` + `eslint-config-prettier`.
-- Aturan penting: `no-use-before-define` (functions off / classes+variables on — TDZ),
-  `import/no-cycle`, `no-empty` (catch kosong dilarang), `no-console` (kecuali
+- Important rules: `no-use-before-define` (functions off / classes+variables on — TDZ),
+  `import/no-cycle`, `no-empty` (catch empty forbidden), `no-console` (except
   site-log.js), `eqeqeq`, `no-param-reassign`, `no-shadow`, `complexity` 25 /
-  `max-depth` 6 / `max-params` 5 (8 pengecualian tech-debt terdokumentasi),
-  `no-restricted-syntax` melarang `chrome.tabs.remove` mentah (override khusus
-  tab-ownership.js), `no-restricted-properties` melarang `innerHTML`/`outerHTML`,
+  `max-depth` 6 / `max-params` 5 (8 documented tech-debt exceptions),
+  `no-restricted-syntax` forbids `chrome.tabs.remove` raw (override dedicated
+  tab-ownership.js), `no-restricted-properties` forbids `innerHTML`/`outerHTML`,
   `reportUnusedDisableDirectives: error`.
-- Catatan: `unsafe-*` dimatikan (file JS tanpa JSDoc); `tests/**` dilonggarkan.
+- Note: `unsafe-*` disabled (file JS without JSDoc); `tests/**` relaxed.
 
 ### knip.json
-- Isi: Entry `src/entrypoints/**`, `src/dashboard/theme.ts`, `tests/**/*.mjs`;
-  project `src/**`, `tests/**`, `scripts/**`. Dikonfigurasi agar false-positive
-  hilang untuk entry WXT. Tidak bisa dipindah ke package.json (knip v6 hanya baca
-  8 lokasi file).
+- Contents: Entry `src/entrypoints/**`, `src/dashboard/theme.ts`, `tests/**/*.mjs`;
+  project `src/**`, `tests/**`, `scripts/**`. Configured to suppress the false
+  positive for the WXT entry. This cannot be moved to `package.json` because
+  Knip v6 reads only eight configuration-file locations.
 
 ### components.json
-- Isi: Konfigurasi shadcn/ui (style `new-york`, slate, cssVariables, lucide).
-  File wajib shadcn CLI.
+- Contents: shadcn/ui configuration (style `new-york`, slate, cssVariables, lucide).
+  Required by the shadcn CLI.
 
 ### .husky/pre-commit + scripts/pre-commit + .github/workflows/check.yml
-- Husky hook: `npm run check` lalu `npm test` (terinstal via script `prepare`).
-- `scripts/pre-commit`: alternatif manual (`cp scripts/pre-commit .git/hooks/pre-commit`).
-- CI (push/PR, Node 24): `npm ci` → `npx wxt prepare` (wajib sebelum typecheck) →
+- Husky hook: `npm run check` then `npm test` (installed via script `prepare`).
+- `scripts/pre-commit`: manual alternative (`cp scripts/pre-commit .git/hooks/pre-commit`).
+- CI (push/PR, Node 24): `npm ci` → `npx wxt prepare` (required before typecheck) →
   `npm run check` → `npm test`.
 
 ### scripts/screenshot.mjs
-- Isi: Smoke test visual via Playwright (dashboard desktop 768px + mobile 360px).
-  Dijalankan manual via `npm run screenshot`; bukan bagian rantai tes.
+- Contents: Smoke visual test via Playwright (dashboard desktop 768px + mobile 360px).
+  Run manually via `npm run screenshot`; not part of the test chain.
 
-### public/lib/pagelib.js (884 baris)
-- Isi: Skrip yang di-inject ke halaman target via debugger; mengekspos
-  `globalThis.__BBR`: read/restore per kategori (localStorage, sessionStorage,
-  IndexedDB, Cache Storage, service worker, OPFS, buckets) + agregat
+### public/lib/pagelib.js (884 lines)
+- Contents: Script injected into the target page via debugger; exposes
+  `globalThis.__BBR`: read/restore per categories (localStorage, sessionStorage,
+  IndexedDB, Cache Storage, service worker, OPFS, buckets) + aggregate
   `readSiteAll`/`restoreSiteAll`/`wipeSiteAll` + transport chunked
   (`setTx`/`txChunk`/`clearTx`/`pushRx`/`takeRx`).
-- Catatan/risiko: Satu-satunya jembatan baca/tulis storage antar-origin; dipanggil
-  dari `src/lib/sitedata.js` lewat `chrome.debugger`.
+- Notes/risks: The only cross-origin storage read/write bridge; called
+  from `src/lib/sitedata.js` via `chrome.debugger`.
 
-## Ringkasan toolchain
-- Build: WXT → `.output/chrome-mv3/`. Lint/format: ESLint (ketat, zero-warning) +
-  Prettier — keduanya hanya mencakup `src/`.
-- Typecheck: `tsc --noEmit` via `tsconfig.check.json` (TS/TSX saja); wajib
-  `npm ci` + `npx wxt prepare` dulu.
-- Tes: `npm test` = 19 skrip Node mandiri (`node:assert/strict`, tanpa framework);
-  E2E/UI butuh Chromium hasil build (`xvfb-run` atau `CI_HEADLESS=1`).
-- Gerbang mutu: `npm run check` → pre-commit/CI → `npm test`; `npm run cycles`
-  (madge) dan `npm run knip` untuk circular-dependency dan kode mati.
+## Toolchain summary
+- Build: WXT → `.output/chrome-mv3/`. Lint/format: ESLint (strict, zero-warning) +
+  Prettier — both cover only `src/`.
+- Typecheck: `tsc --noEmit` via `tsconfig.check.json` (TS/TSX only); required
+  `npm ci` + `npx wxt prepare` first.
+- Tests: `npm test` = 19 standalone Node scripts (`node:assert/strict`, without a framework);
+  E2E/UI requires built Chromium (`xvfb-run` or `CI_HEADLESS=1`).
+- Quality gate: `npm run check` → pre-commit/CI → `npm test`; `npm run cycles`
+  (madge) and `npm run knip` for circular-dependency and dead code.
 
 ---
 
-## 4. Unit tests — `tests/*.mjs` (19 file, tanpa framework)
+## 4. Unit tests — `tests/*.mjs` (19 files, without a framework)
 
-| File | Menguji | Gap terlihat |
+| files | Tests | Visible gaps |
 |---|---|---|
-| `sitedata-tab-cleanup.mjs` (779 baris, terbesar) | Pipeline `collectSiteData` asli vs chrome palsu — skenario A–Q: hard window, takeover user (tidak pernah ditutup), CPU adaptif, exactly-once safeCloseTab, retry waves, storage retry, fallback grup error | Jalur Stop-di-tengah-crawl minim; crash-recovery antar-sesi hanya di E2E |
-| `verify-scan-failed.mjs` | Verdict `verifyScanTab`: chrome-error→`failed`, scan→`ours`, user→`foreign`, hilang→`gone`, origin kosong→marker-only (fix F1, TDD merah-dulu) | Hanya varian `url`, bukan `pendingUrl` |
-| `runtime-tab-remove-guard.mjs` | Guard runtime `chrome.tabs.remove`: 5 pola bypass (alias/destructuring/dinamis) ditolak + tercatat; close resmi tetap jalan | — |
-| `no-raw-tab-remove.mjs` | Statis: tiap `chrome.tabs.remove` harus choke point `safeCloseTab` bertanda SAFETY-ALLOWED; `windows.remove` dilarang | Obfuskasi eksotis lolos (ditutup runtime guard) |
-| `no-circular-import.mjs` | Tidak ada import sirkular antar modul inti (pencegah TDZ) | Melewatkan components/entrypoints; dynamic import tidak dianalisis |
-| `restore-tabs.mjs` | `restoreTabsWindows` + matriks outcome `restoreAll` (ok/partial/failed) | Restore cookies/history/downloads tidak mendalam |
-| `restore-tabs-android.mjs` | Jalur Android: two-phase create-then-navigate | Sempit — hanya urutan dispatch |
-| `cloud-backup-characterization.mjs` | `runCloudBackup` provider `local`: urutan side-effect durable | Hanya provider `local` |
-| `cloud-provider-guard.mjs` | Plaintext-safety `GitHubStorageProvider` vs simulator REST: matriks public/private × plaintext/encrypted; token hanya di header Authorization | — |
-| `cloud-retry.mjs` | Normalisasi config, backoff delay, cancel/restore alarm | Eksekusi retry aktual hanya di E2E |
-| `schedule-settings.mjs` | Normalisasi jadwal, `isBackupDue`, transfer settings token-safe | Edge timezone/DST tidak diuji |
-| `collect-selection.mjs` | `collectAll` hanya kategori terpilih; allowlist extensionStorage | Allowlist di-hardcode di tes (perlu sinkron manual) |
-| `site-data-origins.mjs` | `discoverOrigins` + filter/seleksi origin | — |
-| `site-exclude.mjs` | `isExcluded` — 23 kasus URL berbasis hostname parse (anti false-positive) | IPv6 `[::1]` tidak dicover |
-| `site-log.mjs` | `createSiteLogger` + integrasi `collectSiteData` via `onLogEntry` | Persistensi IndexedDB tidak diuji di Node |
-| `pagelib-category-failures.mjs` | `pagelib.js` asli di `node:vm` dengan semua API storage melempar — tiap kategori gagal independen | Hanya kasus semua-gagal |
-| `probe-characterization.mjs` | `runProbes` — bentuk output, isolasi kegagalan per kategori | Mengunci perilaku, bukan kebenaran penilaian |
-| `lazy-route-retry.mjs` | `loadRouteChunk`/`retryRouteChunk` — gagal sekali→reload; gagal berulang→tidak loop | — |
-| `theme-mode.mjs` | `theme.ts` — boot, persist, system-follow, tanpa flash | Interaksi tombol di E2E |
-| `extension-ui.mjs` (2069 baris) | Extension HASIL BUILD di Chromium: manifest, lazy chunks (JS awal ≤300KiB), layout mobile, settings import/export, restore + password, kegagalan route chunk | Dangkal per halaman; logika bisnis tetap di unit |
-| `api-operations.types.ts` | Typecheck `runCloudBackup`/`runIfDue` via `@ts-expect-error` | By design tanpa asersi runtime |
+| `sitedata-tab-cleanup.mjs` (779 lines, largest) | Pipeline `collectSiteData` real vs. fake Chrome — scenarios A–Q: hard window, takeover user (never closed), adaptive CPU, exactly-once safeCloseTab, retry waves, storage retry, error-group fallback | Mid-crawl stop coverage is limited; cross-session crash recovery is covered only in E2E |
+| `verify-scan-failed.mjs` | Verdict `verifyScanTab`: chrome-error→`failed`, scan→`ours`, user→`foreign`, gone→`gone`, origin empty→marker-only (fix F1, TDD red-first) | Only the `url`, not `pendingUrl` |
+| `runtime-tab-remove-guard.mjs` | Guard runtime `chrome.tabs.remove`: 5 bypass patterns (alias/destructuring/dynamic) rejected + recorded; official close still works | — |
+| `no-raw-tab-remove.mjs` | Static: every `chrome.tabs.remove` must choke point `safeCloseTab` marked SAFETY-ALLOWED; `windows.remove` forbidden | Exotic obfuscation passes (blocked by the runtime guard) |
+| `no-circular-import.mjs` | No circular imports among core modules (to prevent TDZ) | Excludes components/entrypoints; dynamic import not analyzed |
+| `restore-tabs.mjs` | `restoreTabsWindows` + outcome matrix `restoreAll` (ok/partial/failed) | Restore cookies/history/downloads not covered in depth |
+| `restore-tabs-android.mjs` | Path Android: two-phase create-then-navigate | Narrow — dispatch order only |
+| `cloud-backup-characterization.mjs` | `runCloudBackup` `local` provider: durable side-effect ordering | only the `local` provider is covered |
+| `cloud-provider-guard.mjs` | Plaintext-safety `GitHubStorageProvider` vs simulator REST: matrix public/private × plaintext/encrypted; token only in header Authorization | — |
+| `cloud-retry.mjs` | Configuration normalization, backoff delay, cancel/restore alarm | Actual retry execution is only covered in E2E |
+| `schedule-settings.mjs` | Schedule normalization, `isBackupDue`, transfer settings token-safe | Timezone/DST edge cases are not tested |
+| `collect-selection.mjs` | `collectAll` only selected categories; allowlist extensionStorage | Allowlist is hardcoded in the test (requires manual synchronization) |
+| `site-data-origins.mjs` | `discoverOrigins` + origin filtering/selection | — |
+| `site-exclude.mjs` | `isExcluded` — 23 URL cases based hostname parse (anti false-positive) | IPv6 `[::1]` not covered |
+| `site-log.mjs` | `createSiteLogger` + integration `collectSiteData` via `onLogEntry` | IndexedDB persistence is not tested in Node |
+| `pagelib-category-failures.mjs` | `pagelib.js` real in `node:vm` with all storage APIs throwing — each category fails independently | only the all-fail case is covered |
+| `probe-characterization.mjs` | `runProbes` — output shape, failure isolation by category | Locks in behavior, not assessment correctness |
+| `lazy-route-retry.mjs` | `loadRouteChunk`/`retryRouteChunk` — fails once→reload; fails repeatedly→not loop | — |
+| `theme-mode.mjs` | `theme.ts` — boot, persistence, system-follow, without flash | Button interaction in E2E |
+| `extension-ui.mjs` (2069 lines) | Extension BUILD OUTPUT in Chromium: manifest, lazy chunks (JS initial ≤300KiB), layout mobile, settings import/export, restore + password, route-chunk failure | Coverage is shallow per page; business logic remains in unit tests |
+| `api-operations.types.ts` | Typecheck `runCloudBackup`/`runIfDue` via `@ts-expect-error` | By design, with no runtime assertions |
 
-**Ringkasan cakupan:** Paling kuat — keselamatan tab (4 lapis), pipeline site-data
-(skenario A–Q), guard plaintext provider, higiene token. Paling lemah — `crypto.js`
-dan `validate.js` tanpa unit test khusus; logika dashboard TS selain theme hanya
-tersentuh E2E dangkal; jalur Stop-di-tengah-crawl dan crash-recovery minim di unit.
+**Coverage summary:** Strongest — tab safety (4 layers), pipeline site-data
+(scenarios A–Q), guard plaintext provider, token hygiene. Weakest — `crypto.js`
+and `validate.js` without dedicated unit tests; dashboard TS logic other than theme is
+covered only superficially by E2E; mid-crawl stop and crash-recovery paths have limited
+unit-test coverage.
 
 ---
 
-## 5. E2E — `tests/e2e/` (8 file) dan `docs/`
+## 5. E2E — `tests/e2e/` (8 files) and `docs/`
 
-E2E dijalankan: `npm run build` dulu, lalu `xvfb-run -a npm run test:e2e`
-(atau `CI_HEADLESS=1`). Rantai: local → cloud → scheduler → sitedata-tabs →
-sitedata-error-tabs → theme-toggle, semua lewat extension hasil build asli di
+E2E runs `npm run build` first, then `xvfb-run -a npm run test:e2e`
+(or `CI_HEADLESS=1`). Sequence: local → cloud → scheduler → sitedata-tabs →
+sitedata-error-tabs → theme-toggle, all through the real built extension in
 Chromium Playwright (`launch.mjs` + `window.__api`).
 
-| File | Isi |
+| files | Contents |
 |---|---|
-| `launch.mjs` | Launcher bersama: load extension, tunggu `window.__api`, `apiCall`/`must`, kumpulkan `pageErrors` |
-| `seeds.mjs` / `github-simulator.mjs` | Helper seed bookmark; simulator REST GitHub in-memory (fault injection, audit hygiene token) |
-| `local-roundtrip.mjs` | Seed → backup terenkripsi → destroy → password salah ditolak → restore persis → idempoten |
-| `cloud-roundtrip.mjs` | Siklus cloud vs simulator: upload terverifikasi, manifest, digest-mismatch ditolak, HTTP 500 → retry sync artefak yang sama, matriks public/private × plaintext/encrypted |
-| `scheduler-roundtrip.mjs` | Due/catch-up → eksekusi → dedup `already-succeeded-today` → disabled tidak due → tanpa password ditolak |
-| `sitedata-tabs.mjs` | Pipeline streaming: hard window tidak pernah terlampaui (polling live), tab pre-existing dipakai tapi tak tersentuh, progres monotonik, teardown bersih |
-| `sitedata-error-tabs.mjs` | 2 origin jalan + 3 rusak (port tertutup, DNS `.invalid`): jumlah tab setelah == sebelum, tanpa marker/ID baru/chrome-error, kedua grup hilang |
-| `theme-toggle.mjs` | Dark mode: siklus light→dark→system, persist setelah reload |
+| `launch.mjs` | Shared launcher: load extension, wait for `window.__api`, `apiCall`/`must`, collect `pageErrors` |
+| `seeds.mjs` / `github-simulator.mjs` | Bookmark-seeding helper; simulator REST GitHub in-memory (fault injection, audit hygiene token) |
+| `local-roundtrip.mjs` | Seed → backup encrypted → destroy → password wrong rejected → restore exactly → idempotent |
+| `cloud-roundtrip.mjs` | Cloud cycle vs simulator: upload verified, manifest, digest-mismatch rejected, HTTP 500 → retry sync the same artifact, matrix public/private × plaintext/encrypted |
+| `scheduler-roundtrip.mjs` | Due/catch-up → execution → dedup `already-succeeded-today` → disabled not due → rejected without a password |
+| `sitedata-tabs.mjs` | Pipeline streaming: hard window never exceeded (polling live), tab pre-existing used but untouched, progress monotonic, clean teardown |
+| `sitedata-error-tabs.mjs` | 2 origin run + 3 broken (closed port, DNS `.invalid`): tab count after == before, without marker/ID new/chrome-error, both groups disappear |
+| `theme-toggle.mjs` | Dark mode: cycle light→dark→system, persists after reload |
 
-Dokumen terpenting untuk auditor: `docs/PERMISSIONS.md` (jejak permission→fitur),
-`docs/CAPABILITY_REPORT.md` (klaim fidelity + bukti + keterbatasan tak terperbaiki),
-`docs/CLOUD_READINESS.md` (kontrak keamanan pra-cloud), `docs/E2E.md` (cara
-menjalankan + konvensi tes), `docs/BACKUP_FORMAT.md` (spesifikasi format v2).
+Most important documents for auditors: `docs/PERMISSIONS.md` (mapping permissions→features),
+`docs/CAPABILITY_REPORT.md` (fidelity claims + evidence + irreparable limitations),
+`docs/CLOUD_READINESS.md` (pre-cloud security contract), `docs/E2E.md` (how to run
+ + test conventions), `docs/BACKUP_FORMAT.md` (format specification v2).
 
 ---
 
-## 6. Catatan untuk audit total
+## 6. Notes for the full audit
 
-**File yang wajib dibaca duluan (jalur kritis):**
-1. `src/lib/tab-ownership.js` — safety kernel; bug = tab user tertutup.
-2. `src/lib/sitedata.js` — pipeline konkuren terbesar; invariant tab + debugger.
-3. `src/lib/cloud.js` — token, enkripsi, data user di remote.
-4. `src/lib/restore.js` — menulis ke data browser user; harus non-destruktif.
-5. `src/lib/crypto.js` — kecil tapi kritis; tanpa unit test khusus.
-6. `src/dashboard/store.ts` — satu-satunya sumber kebenaran UI; mutual exclusion.
+**Files that must be read first (critical paths):**
+1. `src/lib/tab-ownership.js` — safety kernel; bug = user tabs are closed.
+2. `src/lib/sitedata.js` — largest concurrent pipeline; invariant tab + debugger.
+3. `src/lib/cloud.js` — token, encryption, user data remotely.
+4. `src/lib/restore.js` — writes to the user’s browser data; must be non-destructive.
+5. `src/lib/crypto.js` — small but critical; without dedicated unit tests.
+6. `src/dashboard/store.ts` — the only source of truth for the UI; mutual exclusion.
 
-**Tech debt terdokumentasi (jangan dianggap bug):** complexity > 25 pada
+**Documented tech debt (do not treat as bugs):** complexity > 25 in
 `runCloudBackup` (77), `collectSiteData` (65), `runProbes` (43),
 `restoreTabsWindows` (37), `restoreCookies` (33), `restoreSiteData` (32),
-`openOne` (30), `validateSettingsConfig` (27); `@ts-nocheck` di
-`src/dashboard/{api,cloud-ui,backup-categories}.ts` + sebagian komponen
-(13 type error tersisa, lihat Memory 2026-10-02).
+`openOne` (30), `validateSettingsConfig` (27); `@ts-nocheck` in
+`src/dashboard/{api,cloud-ui,backup-categories}.ts` + some components
+(13 type errors remaining; see Memory 2026-10-02).
 
-**Area yang butuh perhatian auditor:** `(scan as any)` di komponen dashboard
-(longgar terhadap perubahan field lib); filter regex peringatan keamanan di
-`LogPage`; `findOrCreateTab` mengabaikan return `waitTabReady`; jalur
-Stop-di-tengah-crawl dan crash-recovery antar-sesi minim di unit test.
+**Areas needing auditor attention:** `(scan as any)` in dashboard components
+(loose with respect to library field changes); regex security-warning filter in
+`LogPage`; `findOrCreateTab` ignores return `waitTabReady`; paths
+mid-crawl stop and cross-session crash recovery have limited unit-test coverage.

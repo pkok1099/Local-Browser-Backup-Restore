@@ -748,12 +748,12 @@ export async function collectSiteData(progress, opts = {}) {
     log(
       'INFO',
       'SYSTEM',
-      `site-data capture excludes: ${skipped.join(', ')} (not captured; enable in Pengaturan to include)`,
+      `site-data capture excludes: ${skipped.join(', ')} (not captured; enable these categories in Settings to include them)`,
       { excludedCategories: skipped }
     );
   }
   logExcludedReadCategories(readOpts);
-  // UI-overridable tunables (clamped; dashboard Pengaturan page).
+  // UI-overridable tunables (clamped; dashboard Settings page).
   const retryMaxAttempts = clampInt(
     opts.retryMaxAttempts,
     1,
@@ -948,7 +948,7 @@ export async function collectSiteData(progress, opts = {}) {
   );
   const assertForwardDeclarationInitialized = (name, value) => {
     if (value === undefined)
-      throw new Error(`dipanggil sebelum diinisialisasi: ${name}`);
+      throw new Error(`called before initialization: ${name}`);
   };
   function haltCrawl(reason, isViolation) {
     assertForwardDeclarationInitialized('liveStatus', liveStatus);
@@ -1003,11 +1003,11 @@ export async function collectSiteData(progress, opts = {}) {
       `stop requested — STOPPING: Worker 1 halted, Worker 2 has ${(graceMs / 1000).toFixed(1)}s to finish in-flight reads`,
       { graceMs }
     );
-    report('sitedata: stopping — sedang membersihkan…');
+    report('sitedata: stopping — cleaning up…');
     const force = () => {
       if (stopPhase === 'stopping') {
         log('INFO', 'SYSTEM', 'stop grace period ended — forcing halt', {});
-        haltCrawl(reason || 'dihentikan oleh pengguna', false);
+        haltCrawl(reason || 'stopped by user', false);
       }
     };
     setTimeout(force, graceMs);
@@ -1025,12 +1025,12 @@ export async function collectSiteData(progress, opts = {}) {
           'workers drained during STOPPING — halting now',
           {}
         );
-        haltCrawl(reason || 'dihentikan oleh pengguna', false);
+        haltCrawl(reason || 'stopped by user', false);
       }
     }, 200);
   }
   const checkStop = () => {
-    if (!halted && isStopRequested()) requestStop('dihentikan oleh pengguna');
+    if (!halted && isStopRequested()) requestStop('stopped by user');
   };
 
   if (typeof opts.__testBeforeForwardDeclarationsInitialized === 'function') {
@@ -1184,7 +1184,7 @@ export async function collectSiteData(progress, opts = {}) {
       `rise +2 when healthy`
     );
   };
-  // Live crawl status for the dashboard status bar (Log + Ringkasan pages).
+  // Live crawl status for the dashboard status bar (Log + Summary pages).
   liveStatus = {
     state: 'running', // running | stopped | done | fatal
     worker1: 'idle', // what Worker 1 is doing right now
@@ -1195,16 +1195,16 @@ export async function collectSiteData(progress, opts = {}) {
   updateWorkers = () => {
     liveStatus.worker1 =
       w1Active > 0
-        ? `membuka ${w1Active} tab`
+        ? `opening ${w1Active} ${w1Active === 1 ? 'tab' : 'tabs'}`
         : halted
-          ? 'berhenti'
-          : 'menunggu';
+          ? 'stopped'
+          : 'waiting';
     liveStatus.worker2 =
       w2Active > 0
-        ? `membaca ${w2Active} tab`
+        ? `reading ${w2Active} ${w2Active === 1 ? 'tab' : 'tabs'}`
         : halted
-          ? 'berhenti'
-          : 'menunggu';
+          ? 'stopped'
+          : 'waiting';
   };
   const liveStats = () => ({
     done: stats.done,

@@ -2,10 +2,10 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { useApp } from '@/dashboard/store';
 
-// "Download hasil" button: the backup is stored in extension storage (no
-// auto-download). The file is built only when clicked. Shows site count and
-// estimated size beforehand. Disabled when no data. Works during a crawl or
-// after stop (downloads whatever exists).
+// "Download results" button: the backup is stored in extension storage, with no
+// automatic download. The file is built only when clicked. The button shows the
+// site count and estimated size first; it is disabled when no data is available
+// and works during or after a crawl, downloading whatever data is available.
 export function DownloadResultButton() {
   const state = useApp();
   const [busy, setBusy] = useState(false);
@@ -43,15 +43,16 @@ export function DownloadResultButton() {
         onClick={() => void onClick()}
         disabled={!info.ready || busy}
       >
-        {busy ? 'Menyiapkan…' : 'Download hasil'}
+        {busy ? 'Preparing…' : 'Download results'}
       </Button>
       {info.ready ? (
         <span className="text-muted-foreground text-xs">
-          {info.siteCount} situs · perkiraan {sizeStr}
+          {info.siteCount} {info.siteCount === 1 ? 'site' : 'sites'} · estimated{' '}
+          {sizeStr}
         </span>
       ) : (
         <span className="text-muted-foreground text-xs">
-          Belum ada data untuk diunduh.
+          No data is available to download.
         </span>
       )}
       {error && (

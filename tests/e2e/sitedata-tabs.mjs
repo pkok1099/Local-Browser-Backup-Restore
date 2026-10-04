@@ -61,9 +61,9 @@ try {
 
   // Warm the lazy route before the crawl so the E2E measures crawl continuity,
   // not the first-download latency of that route chunk.
-  await page.locator('a[href="#/hasil"]').click();
-  await page.locator('main').getByText('Hasil situs', { exact: true }).waitFor();
-  await page.locator('a[href="#/ringkasan"]').click();
+  await page.locator('a[href="#/results"]').click();
+  await page.locator('main').getByText('Site results', { exact: true }).waitFor();
+  await page.locator('a[href="#/summary"]').click();
   await page.locator('#local-backup').waitFor();
 
   const expr = `
@@ -110,10 +110,10 @@ try {
         await page.evaluate(() => {
           window.__sitedataRouteMarker = 'same-dashboard-document';
           window.__sitedataApiRef = window.__api;
-          window.location.hash = '#/hasil';
+          window.location.hash = '#/results';
         });
-        await page.waitForFunction(() => document.querySelector('main')?.textContent.includes('Hasil situs'), null, { timeout: 10000 });
-        assert.equal(await page.evaluate(() => window.location.hash), '#/hasil', 'hash navigation should select Hasil while the crawl is active');
+        await page.waitForFunction(() => document.querySelector('main')?.textContent.includes('Site results'), null, { timeout: 10000 });
+        assert.equal(await page.evaluate(() => window.location.hash), '#/results', 'hash navigation should select Results while the crawl is active');
         assert.equal(await page.evaluate(() => window.__sitedataRouteMarker), 'same-dashboard-document', 'route navigation should keep the same dashboard document alive');
         assert.equal(await page.evaluate(() => window.__api === window.__sitedataApiRef), true, 'startup API should remain registered during the crawl');
         assert.equal(settled, false, 'site-data crawl should still be running after hash navigation');

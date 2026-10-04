@@ -1,7 +1,7 @@
-// Satu titik masuk untuk memuat snapshot site-scan yang dipersist
-// (chrome.storage.local, key 'bbr:last-site-scan') ke state dashboard.
-// Dipakai halaman Results (#/hasil) dan Failures (#/kegagalan) saat mount,
-// agar daftar situs tetap terisi setelah reload/tab baru/backup terjadwal.
+// Single entry point for loading the persisted site-scan snapshot
+// (chrome.storage.local, key 'bbr:last-site-scan') into dashboard state.
+// Used by the Results and Failures pages when they mount, so the site lists
+// remain populated after a reload, a new tab, or a scheduled backup.
 import {
   getState,
   patchState,
@@ -18,15 +18,15 @@ type PersistedSiteScanRecord = {
   urlStates: UrlState[];
 };
 
-// Limitation: cross-tab live sync DI LUAR SCOPE — hanya re-read saat mount.
-// Tab dashboard kedua tidak sync sampai reload.
+// Limitation: live cross-tab sync is out of scope; data is re-read only on mount.
+// A second dashboard tab will not sync until it is reloaded.
 export async function loadPersistedSiteScan(): Promise<boolean> {
   const storage = globalThis.chrome?.storage?.local ?? null;
   const rec = (await readSiteScanRecord(
     storage
   )) as PersistedSiteScanRecord | null;
   if (!rec) return false;
-  if (getState().backup.siteScan) return false; // live in-memory menang; jangan timpa
+  if (getState().backup.siteScan) return false; // live in-memory state takes precedence; do not overwrite it
   patchState('backup', (b) => ({
     ...b,
     siteScan: rec.stats

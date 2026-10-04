@@ -3,11 +3,11 @@ import { useApp } from '@/dashboard/store';
 import { useSiteLog, useUnseenSiteLogError } from '@/dashboard/site-log-store';
 
 const STATE_LABEL: Record<string, string> = {
-  running: 'berjalan',
-  stopping: 'sedang membersihkan…',
-  stopped: 'dihentikan',
-  done: 'selesai',
-  fatal: 'fatal',
+  running: 'Running',
+  stopping: 'Stopping…',
+  stopped: 'Stopped',
+  done: 'Complete',
+  fatal: 'Fatal',
 };
 
 const STATE_COLOR: Record<string, string> = {
@@ -19,7 +19,7 @@ const STATE_COLOR: Record<string, string> = {
 };
 
 // Live crawl status bar: what is running right now. Shown at the top of the
-// Log and Ringkasan pages. All data comes from the shared store (liveStats).
+// Log and Summary pages. All data comes from the shared store (liveStats).
 export function CrawlStatusBar() {
   const state = useApp();
   useSiteLog(); // re-render on new log entries (for unseen-error badge)
@@ -29,7 +29,7 @@ export function CrawlStatusBar() {
   if (!scan) {
     return (
       <div className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
-        Belum ada crawl berjalan. Jalankan backup dengan kategori website data.
+        No crawl is running. Start a backup with the Website Data category.
       </div>
     );
   }
@@ -60,11 +60,11 @@ export function CrawlStatusBar() {
         </span>
         {unseenError && (
           <Badge variant="danger" className="animate-pulse">
-            ada ERROR/FATAL belum dilihat
+            Unseen ERROR/FATAL entries
           </Badge>
         )}
         <span className="text-muted-foreground">
-          tab:{' '}
+          tabs:{' '}
           <b className="text-foreground">
             {scan.slotsUsed}/{scan.slotsTotal}
           </b>{' '}

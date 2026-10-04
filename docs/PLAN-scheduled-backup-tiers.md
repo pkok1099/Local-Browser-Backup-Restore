@@ -1,70 +1,70 @@
-# Plan: Scheduled backup tanpa lag (siteData tiered / incremental)
+# Plan: Lag-free scheduled backups (tiered/incremental siteData)
 
-## Masalah
-Backup full butuh ~15 menit dan sangat lag. Dijalankan harian → tidak layak.
-Root cause: 11 kategori adalah bacaan API Chrome (detik). `siteData` membuka
-satu tab per origin + attach debugger (satu-satunya kategori lambat).
+## Problem
+A full backup takes ~15 minutes and causes severe lag, so running one daily is not viable.
+Root cause: the 11 categories use fast Chrome API reads that take seconds. `siteData` opens
+one tab per origin and attaches a debugger; it is the only slow category.
 
-## Opsi yang dipertimbangkan
+## Options considered
 
-### A. Tiered schedule (REKOMENDASI)
-- Backup terjadwal harian: 11 kategori cepat saja (tanpa `siteData`).
-- `siteData`: tetap tersedia via backup manual, atau opt-in di jadwal.
-- Artefak tetap snapshot lengkap per kategori yang disertakan; restore tidak berubah.
+### A. Tiered schedule (RECOMMENDED)
+- Daily scheduled backups include only the 11 fast categories (without `siteData`).
+- `siteData` remains available through manual backups or as an opt-in scheduled feature.
+- Artifacts remain complete snapshots for each included category, and restore is unchanged.
 
-### B. Incremental history-based untuk siteData (REVISI — viable)
-- Sinyal perubahan murah: satu `chrome.history.search({ text: '', startTime:
-  lastCrawl, endTime: now })` → himpunan origin yang dikunjungi. Tanpa buka tab.
-  Permission `history` sudah ada; pola query sudah dipakai di
+### B. History-based incremental approach for siteData (REVISED — viable)
+- Low-cost change signal: one `chrome.history.search({ text: '', startTime:
+  lastCrawl, endTime: now })` returns a set of visited origins. No tabs need to be opened.
+  The `history` permission already exists; this query pattern is already used in
   `capability-probes.js`.
-- Crawl hanya untuk origin yang dikunjungi ∩ include-list (filter `includeOrigins`
-  sudah ada di `sitedata.js`).
-- Origin yang tidak dikunjungi: pakai ulang data dari backup sebelumnya (merge).
-  Sumber data lama — dua sub-opsi:
-  - B1: unduh artefak terakhir dari cloud, ambil section siteData, merge.
-    (Tanpa store lokal baru; ada biaya unduh.)
-  - B2: cache per-origin di `chrome.storage.local` (permission
-    `unlimitedStorage` sudah ada), di-update tiap crawl; backup merakit dari
-    cache + hasil fresh. (Tanpa unduh; ada store persisten baru.)
-- Fallback aman: history kosong/di-clear → full crawl (jangan pernah skip buta).
-- Edge case yang didokumentasikan: storage berubah tanpa visit (service worker
-  background sync) akan kelewat sampai origin dikunjungi lagi.
+- Crawl only origins that were visited and are in the include list (the `includeOrigins`
+  filter already exists in `sitedata.js`).
+- For origins that were not visited, reuse data from the previous backup and merge it.
+  There are two sub-options for the old data source:
+  - B1: download the latest artifact from the cloud, extract the siteData section, and merge
+    it. (No new local store; incurs download cost.)
+  - B2: cache each origin in `chrome.storage.local` (the `unlimitedStorage` permission
+    already exists) and update the cache after each crawl; assemble the backup from the
+    cache and fresh results. (No download; introduces a new persistent store.)
+- Safe fallback: if history is empty or cleared, run a full crawl (never skip blindly).
+- Documented edge case: storage changes without a visit (such as service worker
+  background sync) are missed until the origin is visited again.
 
-Rekomendasi A: deterministik (harian selalu detik), simpel, mengatasi keluhan
-inti. B hanya jika A dinilai kurang (siteData harian tetap diinginkan).
+Recommendation A is deterministic (it always takes seconds daily), simple, and addresses
+the core complaint. Use B only if A is insufficient and daily siteData is still desired.
 
-## Rencana implementasi (opsi A)
+## Implementation plan (option A)
 
-### Tugas 1: Opsi konfigurasi jadwal
-- File: `src/lib/scheduler.js` (`normalizeScheduleConfig`), UI pengaturan jadwal.
-- Tambah `schedule.includeSiteData: boolean` (default `false`).
-- Verifikasi: unit test `normalizeScheduleConfig` — default false, true bertahan
-  round-trip.
+### Task 1: Schedule configuration
+- File: `src/lib/scheduler.js` (`normalizeScheduleConfig`), schedule settings UI.
+- Add `schedule.includeSiteData: boolean` (default `false`).
+- Verification: unit test `normalizeScheduleConfig`: the default is false, and true survives
+  a round trip.
 
-### Tugas 2: Scheduled run menghormati opsi
+### Task 2: Scheduled run honors the option
 - File: `src/dashboard/cloud-ui.ts` (`runScheduledCloudBackupUnlocked`).
-- Jika `includeSiteData === false`, teruskan `collectOptions.selectedCategories`
-  = semua kategori kecuali `'siteData'` ke `runCloudBackup`.
-- Verifikasi: test karakterisasi — collect dipanggil tanpa siteData saat opsi
-  mati, dengan siteData saat opsi hidup.
+- If `includeSiteData === false`, pass `collectOptions.selectedCategories`
+  = all categories except `'siteData'` to `runCloudBackup`.
+- Verification: characterization test: collect is called without siteData when the option
+  is off and with siteData when the option is on.
 
-### Tugas 3: UI checkbox + teks penjelasan
-- File: komponen pengaturan jadwal (dashboard).
-- Checkbox "Sertakan site data di backup terjadwal" + subteks:
-  "Site data membuka satu tab per situs (±15 mnt). Matikan untuk backup harian
-  yang cepat; site data tetap bisa di-backup manual kapan saja."
-- Verifikasi: `npm run test:ui` hijau.
+### Task 3: UI checkbox and explanatory text
+- File: schedule settings component (dashboard).
+- Checkbox "Include site data in scheduled backups" + subtext:
+  "Site data opens one tab per site (±15 min). Turn this off for fast daily backups;
+  site data can still be backed up manually at any time."
+- Verification: `npm run test:ui` passes.
 
-### Tugas 4: Verifikasi akhir
-- `npm run check`, `npm test`, `npm run test:e2e` hijau.
-- Pastikan backup manual tidak berubah (tetap full default).
+### Task 4: Final verification
+- `npm run check`, `npm test`, `npm run test:e2e` pass.
+- Ensure manual backups are unchanged (still full by default).
 
-## Risiko
-- Artefak harian tidak berisi siteData → restore harian tidak mengembalikan
-  siteData (oleh desain; backup manual/lama masih punya).
-- Perubahan perilaku default: user yang sudah mengandalkan siteData harian
-  perlu mencentang opsi (komunikasikan di catatan rilis).
+## Risks
+- Daily artifacts do not contain siteData, so daily restores do not restore it by design.
+  Manual and older backups still contain it.
+- Default behavior changes: users who already rely on daily siteData
+  need to select the option (communicate this in the release notes).
 
-## Di luar cakupan
-- Incremental history-based (opsi B) — diputuskan setelah A dievaluasi.
-- Mengubah backup manual.
+## Out of scope
+- History-based incremental approach (option B) — decide after evaluating A.
+- Changing manual backups.

@@ -1298,18 +1298,18 @@ const {
       ]) {
         assert.throws(
           () => assertForwardDeclarationInitialized(name, undefined),
-          new Error(`dipanggil sebelum diinisialisasi: ${name}`)
+          new Error(`called before initialization: ${name}`)
         );
       }
     },
   });
   assert.equal(
     observed.haltCrawl,
-    'dipanggil sebelum diinisialisasi: liveStatus'
+    'called before initialization: liveStatus'
   );
   assert.equal(
     observed.requestStop,
-    'dipanggil sebelum diinisialisasi: liveStatus'
+    'called before initialization: liveStatus'
   );
   assert.equal(section.aborted, undefined);
   assert.deepEqual(Object.keys(section.origins), ['http://example0.com']);

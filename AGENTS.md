@@ -1,47 +1,47 @@
-# Panduan Agen
+# Agent Guide
 
-## Perintah
-- `npm ci`, lalu `npm run build` → hasil di `.output/chrome-mv3/` (load unpacked untuk instal manual).
-- `npm run check` = `lint` + `typecheck` + `format:check`. CI dan pre-commit (husky) menjalankan `npm run check` lalu `npm test`; jangan membuat perubahan yang merusaknya.
-- `npm test` hanya menjalankan suite Node (`test:node`): tiap file `tests/*.mjs` adalah skrip Node mandiri (tanpa framework), jadi satu tes dijalankan dengan `node tests/<nama>.mjs` langsung.
-- E2E/UI butuh Chromium: `export CHROMIUM_PATH=/path/to/chrome` (atau `npx playwright install chromium`), dan display — gunakan `xvfb-run -a npm run test:e2e` / `npm run test:ui`, atau `CI_HEADLESS=1`. E2E selalu `npm run build` dulu.
-- `npm run cycles` (madge) untuk import sirkular, `npm run knip` untuk kode mati (entry: `src/entrypoints/**`, `src/dashboard/theme.ts`, `tests/**/*.mjs`).
-- Rilis: push tag `vX.Y.Z` (harus sama dengan `package.json` version) → workflow `.github/workflows/release.yml` menjalankan check + unit test + build + `wxt zip`, lalu membuat GitHub Release berisi zip (selalu) dan CRX (hanya bila secret `CRX_PRIVATE_KEY` diisi — harus private key PEM yang cocok dengan `key` yang di-pin di `wxt.config.ts`, diverifikasi di CI; tanpa secret, rilis hanya berisi zip).
+## Commands
+- Run `npm ci`, then `npm run build`; the output goes to `.output/chrome-mv3/` (load unpacked for manual installation).
+- `npm run check` runs `lint`, `typecheck`, and `format:check`. CI and pre-commit (husky) run `npm run check` followed by `npm test`; do not make changes that break them.
+- `npm test` runs only the Node suite (`test:node`): each `tests/*.mjs` file is a standalone Node script (without a framework), so run an individual test directly with `node tests/<nama>.mjs`.
+- E2E/UI tests require Chromium: `export CHROMIUM_PATH=/path/to/chrome` (or `npx playwright install chromium`) and a display — use `xvfb-run -a npm run test:e2e` / `npm run test:ui`, or `CI_HEADLESS=1`. E2E always runs `npm run build` first.
+- Use `npm run cycles` (madge) to find circular imports and `npm run knip` to find dead code (entries: `src/entrypoints/**`, `src/dashboard/theme.ts`, `tests/**/*.mjs`).
+- Release: push tag `vX.Y.Z` (it must match the `package.json` version) → workflow `.github/workflows/release.yml` runs check + unit test + build + `wxt zip`, then creates a GitHub Release containing the zip (always) and CRX (only when the `CRX_PRIVATE_KEY` secret is set — it must be a PEM private key matching the `key` pinned in `wxt.config.ts`, verified in CI; without the secret, the release contains only the zip).
 
-## Arsitektur
-- Service worker (`src/entrypoints/background.ts`) sengaja minimal: hanya scheduler/alarm. Semua backup/restore berat berjalan di halaman dashboard agar lifecycle worker MV3 tidak mematikan operasi. Tidak ada popup — toolbar action membuka `dashboard.html` sebagai tab (ramah Android).
-- `src/lib/`: logika inti (JS) — `collect.js`, `restore.js`, `sitedata.js` (orkestrasi pipeline; dependensi dipecah ke modul fokus: `scan-config.js` = SITE_DATA_CONFIG, `tab-ownership.js` = safety kernel tab, `scan-groups.js` = grup scan/error, `scan-concurrency.js` = slot pool + monitor CPU/load; `sitedata.js` me-re-export permukaan publiknya agar importer lama tak berubah), `site-log.js` (logging terpusat), `cloud.js`/`github.js`/`providers.js`, `scheduler.js`, `crypto.js`, `validate.js`, `settings.js`, `capabilities.js`.
-- `src/dashboard/`: logika dashboard (TS) — `logic.ts`, `store.ts`, `api.ts` (menambah `window.__api` untuk otomasi tes via `installTestHooks()`), `theme.ts`, `site-log-store.ts`, `cloud-ui.ts`. Routing halaman via hash (`#/ringkasan`, `#/pengaturan`, `#/hasil`, `#/kegagalan`, `#/log`, `#/lainnya`) dalam satu `dashboard.html`.
-- `public/lib/pagelib.js`: skrip yang di-inject ke halaman (namespace `__BBR`), dipakai membaca data per-site.
-- Manifest: `key` publik bersifat tetap → ID extension deterministik. Jangan ubah permission tanpa kebutuhan nyata (kontrak kompatibilitas rilis).
+## Architecture
+- The service worker (`src/entrypoints/background.ts`) is intentionally minimal and handles only scheduling and alarms. All heavy backup/restore work runs on the dashboard page so the MV3 worker lifecycle does not terminate operations. There is no popup — the toolbar action opens `dashboard.html` as a tab (Android-friendly).
+- `src/lib/`: core logic (JS) — `collect.js`, `restore.js`, `sitedata.js` (pipeline orchestration; dependencies are split into focused modules: `scan-config.js` = SITE_DATA_CONFIG, `tab-ownership.js` = tab safety kernel, `scan-groups.js` = scan/error groups, `scan-concurrency.js` = slot pool + CPU/load monitor; `sitedata.js` re-exports its public surface so existing importers remain unchanged), `site-log.js` (centralized logging), `cloud.js`/`github.js`/`providers.js`, `scheduler.js`, `crypto.js`, `validate.js`, `settings.js`, `capabilities.js`.
+- `src/dashboard/`: dashboard logic (TS) — `logic.ts`, `store.ts`, `api.ts` (adds `window.__api` for test automation via `installTestHooks()`), `theme.ts`, `site-log-store.ts`, and `cloud-ui.ts`. The single `dashboard.html` uses the hash routes `#/summary`, `#/settings`, `#/results`, `#/failures`, `#/log`, and `#/more`. Legacy Indonesian hashes remain supported.
+- `public/lib/pagelib.js`: script injected into pages (namespace `__BBR`), used to read per-site data.
+- Manifest: the public `key` is fixed, which makes the extension ID deterministic. Do not change permissions without a real need (release compatibility contract).
 
-## Keamanan tab (aturan keras)
-- `chrome.tabs.remove` hanya boleh dipanggil di dalam `safeCloseTab` (`src/lib/tab-ownership.js`, ditandai `SAFETY-ALLOWED`), berdasarkan registry `ownedTabIds` + verifikasi URL tab masih membawa marker scan. Jangan pernah menutup tab berdasarkan query atau keanggotaan grup.
-- `chrome.windows.remove` dilarang di mana-mana. Grup scan dibiarkan hilang sendiri saat tab terakhirnya ditutup.
-- Ditegakkan berlapis: `tests/no-raw-tab-remove.mjs` (statis, termasuk akses dinamis `chrome.tabs["remove"]`), `tests/runtime-tab-remove-guard.mjs` (runtime), dan rule ESLint `no-restricted-syntax` (dinonaktifkan khusus di `sitedata.js` karena penanda `SAFETY-ALLOWED` dicek oleh tes).
-- Jangan menghapus data browser/pengguna atau melakukan pembersihan storage yang luas.
+## Tab safety (hard rules)
+- `chrome.tabs.remove` may only be called inside `safeCloseTab` (`src/lib/tab-ownership.js`, marked `SAFETY-ALLOWED`), based on the `ownedTabIds` registry plus verification that the tab URL still carries the scan marker. Never close tabs based on a query or group membership.
+- `chrome.windows.remove` is prohibited everywhere. Scan groups are allowed to disappear on their own when their last tab is closed.
+- These protections are enforced in layers: `tests/no-raw-tab-remove.mjs` (static, including dynamic access via `chrome.tabs["remove"]`), `tests/runtime-tab-remove-guard.mjs` (runtime), and the ESLint `no-restricted-syntax` rule (disabled specifically in `sitedata.js` because tests check the `SAFETY-ALLOWED` marker).
+- Do not delete browser/user data or perform broad storage cleanup.
 
-## Keamanan lain
-- `innerHTML`/`outerHTML` dilarang (XSS) — pakai DOM API yang aman.
-- `no-console` di `src/` (pengecualian: implementasi `log()` di `src/lib/site-log.js`). Log lewat `log(level, category, message, context)` dengan level `DEBUG/INFO/WARN/ERROR/FATAL` dan kategori `W1/W2/STORAGE/CPU/LOAD/SAFETY/RETRY/SYSTEM`; catch kosong dilarang (`allowEmptyCatch: false`) — log alasannya.
-- Higiene rahasia: token GitHub hanya di header `Authorization`, password tidak pernah ditransmisikan/disimpan; ekspor pengaturan tidak menyertakan token. Backup cloud public+plaintext selalu ditolak (`ERR_NO_PASSWORD` / `ERR_PUBLIC_REQUIRES_ENCRYPTION`) — tidak ada fallback plaintext.
+## Other security
+- `innerHTML`/`outerHTML` are prohibited (XSS) — use safe DOM APIs.
+- `no-console` in `src/` (exception: the `log()` implementation in `src/lib/site-log.js`). Log through `log(level, category, message, context)` with levels `DEBUG/INFO/WARN/ERROR/FATAL` and categories `W1/W2/STORAGE/CPU/LOAD/SAFETY/RETRY/SYSTEM`; empty catches are prohibited (`allowEmptyCatch: false`), so log the reason.
+- Secret hygiene: GitHub tokens belong only in the `Authorization` header; passwords are never transmitted or stored; settings exports do not include tokens. Public+plaintext cloud backups are always rejected (`ERR_NO_PASSWORD` / `ERR_PUBLIC_REQUIRES_ENCRYPTION`), with no plaintext fallback.
 
-## Lint & gaya (yang tidak terduga)
-- `no-use-before-define`: `functions: false` (function declaration ter-hoist, aman), `classes`/`variables: true`. TDZ nyata datang dari `let/const/class`, bukan function — jangan "memperbaiki" dengan `functions: true` karena memaksa refactor kode aman.
-- Type-aware rules aktif (`no-floating-promises`, `require-await`, `no-misused-promises`, `await-thenable`), tapi `unsafe-*` dimatikan karena file JS tidak punya tipe JSDoc. TypeScript dipin 5.9.2 (typescript-eslint belum mendukung TS 7).
-- Batas `complexity` 25, `max-depth` 6, `max-params` 5. Pengecualian utang teknis yang terdokumentasi di `eslint.config.mjs` (mis. `runCloudBackup` 77, `collectSiteData` 65) adalah utang, bukan diabaikan — refactor berisiko mengubah perilaku, jadi jangan sentuh tanpa alasan.
-- `no-await-in-loop` mati (await sekuensial disengaja); `require-atomic-updates` mati (false positive, tidak ada shared-memory concurrency).
+## Lint & style (the unexpected parts)
+- `no-use-before-define`: `functions: false` (function declarations are hoisted and safe), `classes`/`variables: true`. Real TDZ issues come from `let`/`const`/`class`, not functions — do not "fix" this with `functions: true`, because that would force a refactor of safe code.
+- Type-aware rules are enabled (`no-floating-promises`, `require-await`, `no-misused-promises`, `await-thenable`), but `unsafe-*` is disabled because JS files have no JSDoc types. TypeScript is pinned to 5.9.2 (typescript-eslint does not yet support TS 7).
+- Limits: `complexity` 25, `max-depth` 6, `max-params` 5. The technical-debt exceptions documented in `eslint.config.mjs` (for example, `runCloudBackup` 77, `collectSiteData` 65) are technical debt, not exemptions. Refactoring risks changing behavior, so do not touch them without a reason.
+- `no-await-in-loop` is disabled (sequential await is intentional); `require-atomic-updates` is disabled (false positive, no shared-memory concurrency).
 
-## Konvensi tes
-- Tulis tes Node sebagai skrip mandiri dengan `node:assert/strict` yang gagal via exit code; tambah ke rantai `test:node` di `package.json`.
-- Konvensi E2E (`docs/E2E.md`): pakai ulang `launchDashboard()` + `apiCall()` dari `tests/e2e/launch.mjs`; restore butuh opsi kategori eksplisit (`options: { bookmarks: { enabled: true } }`) karena default restore nonaktif; kosongkan `chrome.storage.session` (`bbr:session-pw`) sebelum menguji perilaku tanpa password; akhiri setiap tes browser dengan asersi nol `pageErrors`.
-- Sandbox yang memblokir navigasi top-level ke origin lokal (Chrome Local Network Access) tidak bisa mengasersi isi storage site-data — itu keterbatasan lingkungan, bukan bug.
+## Test conventions
+- Write Node tests as standalone scripts using `node:assert/strict` that fail via exit code; add them to the `test:node` chain in `package.json`.
+- E2E conventions (`docs/E2E.md`): reuse `launchDashboard()` + `apiCall()` from `tests/e2e/launch.mjs`; restore requires explicit category options (`options: { bookmarks: { enabled: true } }`) because restore is disabled by default; clear `chrome.storage.session` (`bbr:session-pw`) before testing behavior without a password; end every browser test with an assertion that there are zero `pageErrors`.
+- A sandbox that blocks top-level navigation to a local origin (Chrome Local Network Access) cannot assert site-data storage contents — this is an environment limitation, not a bug.
 
 ## Git
-- Jangan membuat commit, tag, atau push tanpa persetujuan eksplisit pengguna untuk tindakan tersebut. Jangan memakai amend, rebase, atau force-push sebagai pengganti persetujuan itu.
+- Do not create commits, tags, or pushes without the user's explicit approval for those actions. Do not use amend, rebase, or force-push as a substitute for that approval.
 
-## Alur kerja
-- Pahami struktur, alur terkait, kontrak, dokumentasi, dan tes sebelum merancang perubahan; petakan komponen serta dependensi sebelum perubahan arsitektur.
-- Skill lengkap tersedia di `docs/agent-skills/`. Baca salinan yang relevan dan panggil skill terpasang yang sesuai pemicunya (`brainstorming` untuk desain, TDD untuk fitur/fix, `systematic-debugging` saat gagal, `verification-before-completion` sebelum klaim selesai).
-- Jaga perubahan sekecil mungkin, pertahankan perilaku dan tes, jangan melemahkan atau menghapus tes, dan jangan menambah dependensi tanpa kebutuhan nyata.
-- Pertahankan keselamatan backup/restore Chrome MV3 dan kontrak kompatibilitas rilis. Kontrak khusus rilis hanya boleh diubah berdasarkan desain atau spesifikasi yang telah disetujui.
+## Workflow
+- Understand the structure, relevant flows, contracts, documentation, and tests before designing changes; map components and dependencies before making architectural changes.
+- Complete skills are available in `docs/agent-skills/`. Read the relevant copies and invoke installed skills when their triggers apply (`brainstorming` for design, TDD for features/fixes, `systematic-debugging` when something fails, `verification-before-completion` before claiming completion).
+- Keep changes as small as possible, preserve behavior and tests, do not weaken or remove tests, and do not add dependencies without a real need.
+- Preserve Chrome MV3 backup/restore safety and the release compatibility contract. Release-specific contracts may be changed only based on an approved design or specification.

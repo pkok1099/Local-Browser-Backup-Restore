@@ -13,7 +13,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 
-// Extra user-safe tunables for the site-data crawl (Pengaturan page).
+// Extra user-safe tunables for the site-data crawl (Settings page).
 export function SiteDataTuningCard() {
   const [tuning, setTuning] = useState<SiteDataTuning | null>(null);
   const [include, setInclude] = useState<SiteDataInclude | null>(null);
@@ -51,7 +51,7 @@ export function SiteDataTuningCard() {
       <CardContent className="grid gap-3">
         <div className="grid gap-1.5">
           <Label htmlFor="tuning-attempts">
-            Upaya maksimum per situs (1–5)
+            Maximum attempts per site (1–5)
           </Label>
           <Input
             id="tuning-attempts"
@@ -64,12 +64,12 @@ export function SiteDataTuningCard() {
             }
           />
           <p className="text-muted-foreground text-xs">
-            Tab lama selalu ditutup dulu sebelum upaya berikutnya dibuka.
+            We always close the previous tab before starting another attempt.
           </p>
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="tuning-read-timeout">
-            Timeout baca per tab, detik (15–180)
+            Per-tab read timeout, in seconds (15–180)
           </Label>
           <Input
             id="tuning-read-timeout"
@@ -82,13 +82,13 @@ export function SiteDataTuningCard() {
             }
           />
           <p className="text-muted-foreground text-xs">
-            Pembacaan yang menggantung dibatalkan — tab tetap ditutup, slot
-            dilepas.
+            If a read stalls, the extension cancels it, closes the tab, and
+            releases the slot.
           </p>
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="tuning-checkpoint">
-            Simpan checkpoint tiap N situs (5–50)
+            Save a checkpoint every N sites (5–50)
           </Label>
           <Input
             id="tuning-checkpoint"
@@ -105,11 +105,11 @@ export function SiteDataTuningCard() {
         </div>
         <div className="grid gap-2 rounded-md border p-2.5">
           <div className="text-xs font-semibold">
-            Kategori yang tidak bisa di-restore — sertakan dalam backup?
+            Include non-restorable categories in the backup?
           </div>
           <p className="text-muted-foreground text-[11px]">
-            Default mati (tidak di-backup). Bila dimatikan, datanya tidak
-            diambil sama sekali — hemat waktu dan penyimpanan.
+            Off by default. Disabled categories are skipped, saving time and
+            storage.
           </p>
           <label className="flex items-start gap-2 text-xs">
             <input
@@ -119,8 +119,7 @@ export function SiteDataTuningCard() {
               onChange={(e) => setInc({ sessionStorage: e.target.checked })}
             />
             <span>
-              <b>sessionStorage</b> — tidak bisa di-restore bila restore membuat
-              tab baru (hanya bisa ke tab yang sudah terbuka).
+              <b>sessionStorage</b> can only be restored to an already-open tab.
             </span>
           </label>
           <label className="flex items-start gap-2 text-xs">
@@ -131,16 +130,16 @@ export function SiteDataTuningCard() {
               onChange={(e) => setInc({ serviceWorkers: e.target.checked })}
             />
             <span>
-              <b>Service Workers</b> — restore butuh script worker masih
-              disajikan oleh situsnya (keterbatasan platform).
+              <b>Service Workers</b> can be restored only while the site still
+              serves the worker script (a platform limitation).
             </span>
           </label>
         </div>
         <div className="flex items-center gap-2">
           <Button size="sm" onClick={() => void save()}>
-            Simpan
+            Save
           </Button>
-          {saved && <Badge variant="success">tersimpan</Badge>}
+          {saved && <Badge variant="success">Saved</Badge>}
         </div>
       </CardContent>
     </Card>

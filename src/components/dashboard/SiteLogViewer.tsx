@@ -142,13 +142,13 @@ export function SiteLogViewer() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Input
-            placeholder="Cari teks…"
+            placeholder="Search text…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="min-w-0 flex-1"
           />
           <Input
-            placeholder="Filter URL / id korelasi…"
+            placeholder="Filter by URL / correlation ID…"
             value={corr}
             onChange={(e) => setCorr(e.target.value)}
             className="min-w-0 flex-1"
@@ -156,13 +156,13 @@ export function SiteLogViewer() {
         </div>
         {selectedUrl && (
           <div className="flex items-center gap-2 text-sm">
-            <span>Riwayat URL:</span>
+            <span>URL history:</span>
             <Badge variant="default">{selectedUrl}</Badge>
             <button
               onClick={() => setSelectedUrl(null)}
               className="text-xs text-muted-foreground underline"
             >
-              tutup
+              Close
             </button>
           </div>
         )}
@@ -175,14 +175,14 @@ export function SiteLogViewer() {
           variant="outline"
           onClick={() => setDetailed((d) => !d)}
         >
-          {detailed ? 'Tampilan ringkas' : 'Tampilan rinci'}
+          {detailed ? 'Compact view' : 'Detailed view'}
         </Button>
         <Button
           size="sm"
           variant="outline"
           onClick={() => setAutoScroll((a) => !a)}
         >
-          {autoScroll ? 'Jeda auto-scroll' : 'Lanjut auto-scroll'}
+          {autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
         </Button>
         <Button
           id="clear-logs"
@@ -211,17 +211,17 @@ export function SiteLogViewer() {
           variant="outline"
           onClick={() => exportJson(filtered)}
         >
-          Ekspor JSON
+          Export JSON
         </Button>
         <Button
           size="sm"
           variant="outline"
           onClick={() => exportText(filtered)}
         >
-          Ekspor teks
+          Export text
         </Button>
         <span className="text-muted-foreground ml-auto">
-          {filtered.length} entri
+          {filtered.length} {filtered.length === 1 ? 'entry' : 'entries'}
         </span>
         <p className="basis-full text-muted-foreground text-xs">
           Clear Logs removes dashboard and crawl logs only. It does not remove
@@ -262,7 +262,7 @@ export function SiteLogViewer() {
               <button
                 onClick={() => setSelectedUrl(e.url)}
                 className="max-w-full shrink-0 break-all text-blue-600 underline dark:text-blue-400"
-                title="Lihat riwayat URL ini"
+                title="View this URL history"
               >
                 {e.url}
               </button>
@@ -276,7 +276,7 @@ export function SiteLogViewer() {
         ))}
         {filtered.length === 0 && (
           <p className="text-muted-foreground p-2 font-sans text-sm">
-            Tidak ada entri yang cocok dengan filter.
+            No entries match the current filters.
           </p>
         )}
       </div>

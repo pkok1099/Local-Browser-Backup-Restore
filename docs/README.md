@@ -1,144 +1,141 @@
 # Local Browser Backup & Restore
 
-Extension Chromium/Chrome **Manifest V3** untuk backup dan restore data browser secara **100% lokal** — tanpa server, tanpa telemetry, tanpa native code, tanpa modifikasi browser.
+A **Manifest V3** Chromium/Chrome extension for backing up and restoring browser data **100% locally**. It uses no server, telemetry, native code, or browser modifications.
 
-- **Versi format backup:** 1 (`chrome-local-backup`)
-- **Core backup/restore diuji pada:** Chrome for Testing 131.0.6778.204 (Linux x86-64, headless)
-- **Versi minimum:** Chrome/Chromium ≥ 114 (karena permission `readingList`)
-- Kategori backup dapat dipilih di dashboard. Website data menampilkan daftar origin dengan pencarian dan pilihan include per situs.
+- **Backup format version:** 1 (`chrome-local-backup`)
+- **Core backup/restore tested on:** Chrome for Testing 131.0.6778.204 (Linux x86-64, headless)
+- **Minimum version:** Chrome/Chromium ≥ 114 (because of the `readingList` permission)
+- Select backup categories in the dashboard. Website data appears as a searchable list of origins, with an option to include each site.
 
 ---
 
-## Instalasi (unpacked extension)
+## Installation (unpacked extension)
 
-1. Buka `chrome://extensions`.
-2. Aktifkan **Developer mode** (kanan atas).
-3. Jalankan `npm ci` lalu `npm run build`, kemudian klik **Load unpacked** → pilih folder `.output/chrome-mv3/`.
-4. Ikon extension muncul di toolbar. Klik untuk membuka dashboard di tab baru; ekstensi tidak memakai popup agar alur lebih nyaman di browser Android.
+1. Open `chrome://extensions`.
+2. Enable **Developer mode** (top right).
+3. Run `npm ci`, then `npm run build`. Click **Load unpacked** → select the `.output/chrome-mv3/` folder.
+4. The extension icon appears in the toolbar. Click it to open the dashboard in a new tab. The extension has no popup, which makes the flow more convenient in Android browsers.
 
-> ID extension bersifat deterministik karena manifest menyertakan `key` publik. Backup lokal tidak mengirim data; koneksi GitHub hanya digunakan jika fitur cloud dikonfigurasi dan dijalankan.
+> The extension ID is deterministic because the manifest includes a public `key`. Local backups do not send data. The GitHub connection is used only when the cloud feature is configured and used.
 
-### Permission yang diminta (dan alasannya)
+### Requested permissions (and why)
 
-| Permission | Alasan |
+| Permission | Reason |
 |---|---|
-| `bookmarks`, `history`, `tabs`, `tabGroups`, `sessions`, `readingList` | Membaca & memulihkan data tersebut |
-| `cookies` + host `http://*/*`, `https://*/*` | Membaca & memulihkan cookie semua situs |
-| `downloads` | Membaca daftar riwayat unduhan & menyimpan file backup |
-| `storage`, `unlimitedStorage` | Menyimpan preferensi & backup sementara |
-| `management` | Membaca daftar extension ter-install (metadata, untuk checklist reinstall) |
+| `bookmarks`, `history`, `tabs`, `tabGroups`, `sessions`, `readingList` | Read and restore this data |
+| `cookies` + host `http://*/*`, `https://*/*` | Read and restore cookies from all sites |
+| `downloads` | Read the download history list and save backup files |
+| `storage`, `unlimitedStorage` | Store preferences and temporary backups |
+| `management` | Read the list of installed extensions (metadata, for the reinstall checklist) |
 
-Extension tidak mengirim telemetry atau memakai remote code. Koneksi jaringan hanya dipakai untuk fitur backup GitHub yang dipilih pengguna; token GitHub disimpan pada storage extension dan tidak ditampilkan ulang di UI.
+The extension does not send telemetry or use remote code. It uses network connections only for the GitHub backup feature selected by the user. The GitHub token is stored in extension storage and is not shown again in the UI.
 
 ---
 
-## Penggunaan singkat
+## Quick usage
 
 ### Backup
-1. Klik ikon extension untuk membuka dashboard. Pilih **Local only** untuk file Downloads, **Cloud only** untuk GitHub, atau **Both** untuk menyimpan ke Downloads dan GitHub.
-2. Backup lokal dapat dibuat sebagai plaintext `.json` atau terenkripsi `.enc.json`; backup cloud mengikuti kebijakan enkripsi repository dan preferensi cloud.
-3. Untuk backup terenkripsi: masukkan password (≥ 8 karakter disarankan). **Password tidak pernah disimpan — jika hilang, backup tidak dapat dibuka.**
-4. File yang diunduh tersimpan di folder Downloads dengan nama `browser-backup-YYYYMMDD-HHMMSS[.enc].json`.
-5. Ringkasan per kategori (jumlah item + status restorable) ditampilkan di dashboard.
+1. Click the extension icon to open the dashboard. Choose **Local only** to save a file in Downloads, **Cloud only** to save to GitHub, or **Both** to save to both.
+2. Local backups can be created as plaintext `.json` or encrypted `.enc.json`. Cloud backups follow the repository's encryption policy and cloud preferences.
+3. For an encrypted backup, enter a password (≥ 8 characters recommended). **The password is never stored. If it is lost, the backup cannot be opened.**
+4. Downloaded files are saved in the Downloads folder with the name `browser-backup-YYYYMMDD-HHMMSS[.enc].json`.
+5. The dashboard displays a summary for each category, including the item count and restorable status.
 
-Jadwal cloud dapat dijalankan setiap hari atau mingguan pada hari-hari yang dipilih. Status retry menampilkan percobaan berikutnya; retry otomatis bisa dibatalkan tanpa menghapus backup yang tertunda. Pengaturan dapat diekspor atau diimpor sebagai JSON; token GitHub tidak pernah disertakan dan token di profil tujuan tetap dipertahankan.
+Cloud scheduling can run daily or weekly on selected days. Retry status shows the next attempt, and automatic retries can be canceled without deleting the pending backup. Settings can be exported or imported as JSON. The GitHub token is never included, and the token in the destination profile is retained.
 
-> Jika **Automatically retry failed uploads** diaktifkan, kegagalan upload cloud memakai salinan sementara di extension storage dan mencoba ulang setelah 1, 2, 4… menit (maksimal 8 percobaan). Salinan sementara dihapus setelah upload berhasil. Browser harus berjalan agar alarm retry dapat diproses.
+> If **Automatically retry failed uploads** is enabled, failed cloud uploads use a temporary copy in extension storage and retry after 1, 2, 4… minutes (up to 8 attempts). The temporary copy is deleted after a successful upload. The browser must be running for the retry alarm to be processed.
 
 ### Restore
-1. Klik ikon extension untuk membuka dashboard, lalu pilih **Restore from file** dan pilih file backup.
-2. Jika terenkripsi → masukkan password.
-3. Dashboard menampilkan isi backup + status restorable per kategori + **keterbatasan yang jujur** (mis. "History: basic restore only").
-4. Pilih kategori yang ingin dipulihkan (default: semua yang restorable; `Downloads` nonaktif secara default).
-5. Klik **Restore**. Default restore **non-destruktif**:
-   - Bookmarks: *merge* (URL yang sudah ada di folder tujuan dilewati).
-   - Mode *replace* (menghapus bookmarks bar & other bookmarks dulu) hanya dijalankan jika dicentang + dikonfirmasi via dialog.
-   - Tabs/windows dibuat sebagai jendela/tab **baru**; data existing tidak disentuh.
-6. Hasil per kategori ditampilkan, termasuk item yang gagal dan alasannya.
+1. Click the extension icon to open the dashboard, then choose **Restore from file** and select a backup file.
+2. If it is encrypted, enter the password.
+3. The dashboard displays the backup contents, the restorable status for each category, and **honest limitations** (for example, "History: basic restore only").
+4. Select the categories to restore. By default, all restorable categories are selected, while `Downloads` is disabled.
+5. Click **Restore**. The default restore is **non-destructive**:
+   - Bookmarks: *merge* (existing URLs in the destination folder are skipped).
+   - *Replace* mode, which first deletes the bookmarks bar and other bookmarks, runs only when selected and confirmed in the dialog.
+   - Tabs/windows are created as **new** windows/tabs. Existing data is not touched.
+6. Results are displayed for each category, including failed items and the reasons they failed.
 
 ### Check Capabilities
-Menampilkan deteksi API live di browser Anda (Read / Backup / Restore per kategori) + hasil probe runtime (bukti eksperimental, mis. perilaku `history.addUrl`).
+Displays live API detection in your browser (Read / Backup / Restore for each category) and runtime probe results (experimental evidence, such as `history.addUrl` behavior).
 
 ---
 
-## Struktur proyek (sejak v1.4.0 — WXT + React + shadcn/ui)
+## Project structure (since v1.4.0 — WXT + React + shadcn/ui)
 
 ```
-wxt.config.ts              ← konfigurasi WXT: manifest MV3, permissions, key publik, Tailwind v4
+wxt.config.ts              ← WXT configuration: MV3 manifest, permissions, public key, Tailwind v4
 src/
   entrypoints/
-    background.ts          ← service worker (scheduler + cloud-retry alarm; logika identik v1.3.0)
-    dashboard/             ← halaman dashboard (index.html + main.tsx + App.tsx)
+    background.ts          ← service worker (scheduler + cloud-retry alarm; logic identical to v1.3.0)
+    dashboard/             ← dashboard page (index.html + main.tsx + App.tsx)
   dashboard/
-    store.ts               ← store state eksternal (jembatan logika ↔ React)
-    logic.ts               ← port pipeline backup lokal/restore/capabilities
-    cloud-ui.ts            ← port handler cloud (connect/backup/retry/schedule/settings/init)
-    api.ts                 ← window.__api (surface test otomatis, identik v1.3.0)
-  lib/                     ← logika inti (TIDAK diubah dari v1.3.0):
-    settings.js            ← validasi ekspor/impor preferensi (tanpa token)
-    scheduler.js           ← keputusan jadwal murni (daily/weekly) + state storage
-    cloud.js               ← orkestrator cloud (pending retry, retention, fase status)
-    github.js              ← GitHubStorageProvider (Contents API + verifikasi objek)
-    providers.js           ← kontrak StorageProvider + LocalStorageProvider + placeholder
-    artifact.js            ← artefak backup + manifest + guard plaintext (below-UI)
+    store.ts               ← external state store (logic ↔ React bridge)
+    logic.ts               ← local backup/restore/capabilities pipeline port
+    cloud-ui.ts            ← cloud handler port (connect/backup/retry/schedule/settings/init)
+    api.ts                 ← window.__api (automated test surface, identical to v1.3.0)
+  lib/                     ← core logic (NOT changed from v1.3.0):
+    settings.js            ← preference export/import validation (without token)
+    scheduler.js           ← pure scheduling decisions (daily/weekly) + storage state
+    cloud.js               ← cloud orchestrator (pending retry, retention, status phases)
+    github.js              ← GitHubStorageProvider (Contents API + object verification)
+    providers.js           ← StorageProvider contract + LocalStorageProvider + placeholder
+    artifact.js            ← backup artifact + manifest + plaintext guard (below-UI)
     crypto.js              ← PBKDF2(600k) + AES-256-GCM + AAD envelope
-    format.js              ← konstanta format v2 + integrity digest
-    collect.js/restore.js  ← collector & restorer semua kategori
+    format.js              ← format v2 constants + integrity digest
+    collect.js/restore.js  ← collector & restorer for all categories
     sitedata.js/capabilities.js/util.js/validate.js
   components/
-    ui/                    ← komponen shadcn/ui (button, card, select, checkbox, dst.)
-    dashboard/             ← kartu fitur dashboard (React + Tailwind)
-public/lib/pagelib.js      ← disalin apa adanya ke root build (dipakai chrome.scripting)
+    ui/                    ← shadcn/ui components (button, card, select, checkbox, etc.)
+    dashboard/             ← dashboard feature cards (React + Tailwind)
+public/lib/pagelib.js      ← copied unchanged to the build root (used by chrome.scripting)
 tests/                     ← cloud-retry.mjs, schedule-settings.mjs (Node) + extension-ui.mjs (Playwright)
-docs/                      ← dokumentasi lengkap + spesifikasi fitur
-.output/chrome-mv3/        ← hasil `npm run build` (folder yang di-load sebagai unpacked extension)
+docs/                      ← complete documentation + feature specifications
+.output/chrome-mv3/        ← output of `npm run build` (folder loaded as an unpacked extension)
 ```
 
-**Catatan arsitektur penting (MV3):** semua operasi backup/restore berjalan di *dashboard page* (tab extension), **bukan** di service worker. Alasannya: service worker MV3 dapat dimatikan browser kapan saja (idle timeout), yang fatal untuk operasi panjang. Extension page hidup selama tab terbuka dan punya DOM API penuh (Blob, CompressionStream, dsb.).
+**Important architecture note (MV3):** all backup/restore operations run on the *dashboard page* (extension tab), rather than in the service worker. The MV3 service worker can be shut down by the browser at any time (idle timeout), which would interrupt long operations. The extension page stays alive while its tab is open and has the full DOM API (Blob, CompressionStream, etc.).
 
 ---
 
-## Pengembangan (WXT)
+## Development (WXT)
 
 ```bash
-npm install          # instal dependensi
-npm run dev          # mode dev (auto-reload, load unpacked dari .output/chrome-mv3)
-npm run build        # build produksi → .output/chrome-mv3
-npm run zip          # paket zip siap publish
-npm run compile      # typecheck TypeScript (tsc --noEmit)
-npm test             # test Node: retry, schedule, restore tabs and backup/site selection
-npm run test:ui      # test UI Playwright terhadap build asli (butuh Chromium + X server)
+npm install          # install dependencies
+npm run dev          # dev mode (auto-reload, load unpacked from .output/chrome-mv3)
+npm run build        # production build → .output/chrome-mv3
+npm run zip          # zip package ready for publishing
+npm run compile      # TypeScript typecheck (tsc --noEmit)
+npm test             # Node tests: retry, schedule, restore tabs and backup/site selection
+npm run test:ui      # Playwright UI tests against the actual build (requires Chromium + X server)
 ```
 
-Migrasi v1.4.0 mempertahankan: format backup v2, format envelope enkripsi, kontrak
-StorageProvider, kebijakan enkripsi publik/private, penjadwalan daily/weekly, retry
-eksponensial, dan settings transfer token-safe. Logika inti (`src/lib/*.js`) identik
-dengan v1.3.0 sehingga backup lama tetap dapat dibuka.
+The v1.4.0 migration preserves backup format v2, the StorageProvider contract, public/private encryption policies, daily/weekly scheduling, exponential retries, and token-safe settings transfer. The core logic (`src/lib/*.js`) is identical to v1.3.0, so older backups can still be opened.
 
 ---
 
-## Keamanan
+## Security
 
-- Tidak ada request jaringan, telemetry, analytics, atau remote code (CSP MV3 `script-src 'self'`).
-- Enkripsi: **PBKDF2-HMAC-SHA-256 (600.000 iterasi)** → **AES-256-GCM** dengan AAD yang mengikat seluruh header envelope (menolak serangan downgrade parameter).
-- Password: tidak disimpan, tidak dikirim, tidak di-log; derived key dibuat *non-extractable*.
-- Integritas: SHA-256 atas canonical JSON (sorted keys) dari `counts+data+capabilities`.
-- Cookie **values tidak pernah dicetak ke console/log**; log hanya memuat nama/jumlah.
-- Data incognito tidak dibaca (cookie store incognito & jendela incognito dikecualikan by design).
-- Password manager/autofill: tidak disentuh (memang tidak ada API-nya).
-
----
-
-## Dokumentasi lanjutan
-
-- `docs/BACKUP_FORMAT.md` — skema lengkap format backup v1.
-- `docs/CAPABILITY_REPORT.md` — matriks Read/Backup/Restore per kategori + bukti runtime + keterbatasan API.
-- `docs/TEST_RESULTS.md` — hasil automated test A–G di Chrome 131.
-- `tests/extension-ui.mjs` — smoke test Playwright untuk dashboard mobile dan load MV3 extension di Chromium.
-- Jalankan unit test: `npm test`. Jalankan test Playwright Chromium: `npm ci`, `npx playwright install chromium`, lalu `xvfb-run -a npm run test:ui` pada Linux headless.
+- No network requests, telemetry, analytics, or remote code (CSP MV3 `script-src 'self'`).
+- Encryption: **PBKDF2-HMAC-SHA-256 (600,000 iterations)** → **AES-256-GCM** with AAD binding the entire envelope header (rejects parameter downgrade attacks).
+- Passwords are not stored, sent, or logged; the derived key is made *non-extractable*.
+- Integrity: SHA-256 over canonical JSON (sorted keys) for `counts+data+capabilities`.
+- Cookie **values are never printed to the console/log**. Logs contain only names/counts.
+- Incognito data is not read. Incognito cookie stores and incognito windows are excluded by design.
+- Password managers/autofill are not touched because there is no API for them.
 
 ---
 
-## Atribusi ikon
+## Further documentation
 
-Ikon extension (`public/icon.png`) oleh Smashicons dari Flaticon — [www.flaticon.com](https://www.flaticon.com).
+- `docs/BACKUP_FORMAT.md` — complete backup format v1 schema.
+- `docs/CAPABILITY_REPORT.md` — Read/Backup/Restore matrix by category + runtime evidence + API limitations.
+- `docs/TEST_RESULTS.md` — results of automated tests A–G in Chrome 131.
+- `tests/extension-ui.mjs` — Playwright smoke test for the mobile dashboard and loading the MV3 extension in Chromium.
+- Run unit tests: `npm test`. Run Chromium Playwright tests: `npm ci`, `npx playwright install chromium`, then `xvfb-run -a npm run test:ui` on headless Linux.
+
+---
+
+## Icon attribution
+
+The extension icon (`public/icon.png`) is by Smashicons from Flaticon — [www.flaticon.com](https://www.flaticon.com).

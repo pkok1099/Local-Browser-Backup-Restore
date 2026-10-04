@@ -91,7 +91,7 @@ export function LocalActionsCard() {
               pickError: null,
             }));
             appendLog('restore: choose a backup file');
-            window.location.hash = '#/lainnya'; // RestoreCard lives on the Lainnya page
+            window.location.hash = '#/more'; // RestoreCard lives on the More page
             requestAnimationFrame(() =>
               document.getElementById('restore-file')?.focus()
             );
@@ -104,7 +104,7 @@ export function LocalActionsCard() {
           id="local-capabilities"
           variant="outline"
           onClick={() => {
-            window.location.hash = '#/lainnya'; // CapabilitiesCard lives on the Lainnya page
+            window.location.hash = '#/more'; // CapabilitiesCard lives on the More page
             void import('@/dashboard/logic').then(({ showCapabilities }) =>
               showCapabilities()
             );

@@ -240,10 +240,10 @@ export function requestBackupStop() {
 let lastSiteDataOpts: CollectOptions | null = null;
 let lastSiteDataSection: SiteDataSection | null = null;
 
-// Persistensi snapshot site-scan (key 'bbr:last-site-scan') agar halaman
-// Results/Failures tetap terisi setelah reload/tab baru. Run dibuat saat
-// backup mulai; retry-save memakai runId yang sama (jangan di-null-kan di
-// akhir buildBackupObject).
+// Persist site-scan snapshots (key 'bbr:last-site-scan') so the Results and
+// Failures pages stay populated after a reload, in a new tab, or after a scheduled
+// backup. The run is created when the backup starts; save retries reuse the same
+// runId (do not set it to null in buildBackupObject).
 let siteScanRun: { runId: string; startedAt: number } | null = null;
 let siteScanLastPersistMs = 0;
 
@@ -528,8 +528,8 @@ export async function buildBackupObject(
   backup.counts = countRecord(computeCounts(clean));
   await finalizeIntegrity(backup);
   lastSiteDataSection = data.siteData || null;
-  // Snapshot final (completedAt terisi); siteScanRun sengaja TIDAK di-null-kan
-  // agar retry-save sesudahnya memakai runId yang sama.
+  // Final snapshot (completedAt is set); deliberately keep siteScanRun non-null
+  // so a later save retry reuses the same runId.
   await persistSiteScanNow(true);
   return { backup, categoryStatus };
 }
@@ -624,7 +624,7 @@ async function doBackupUnlocked({
       patchState('backup', (b) => ({
         ...b,
         status:
-          'dihentikan pengguna — partial results kept, resume to continue the rest.',
+          'Stopped by user — partial results are kept; resume to continue the rest.',
       }));
       appendLog('backup stopped by user; no file written');
       // Keep the partial backup for download (user can download what exists).
@@ -634,13 +634,13 @@ async function doBackupUnlocked({
     patchState('backup', (b) => ({ ...b, frac: 0.7, status: 'preparing…' }));
 
     // No auto-download: the result stays in extension storage. The user
-    // downloads explicitly via the "Download hasil" button.
+    // downloads explicitly via the "Download results" button.
     await storeBackupForDownload(backup, encrypt, password);
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
     patchState('backup', (b) => ({
       ...b,
       frac: 1,
-      status: `Backup selesai dalam ${secs}s — tersimpan di penyimpanan ekstensi. Klik "Download hasil" untuk mengunduh file.`,
+      status: `Backup finished in ${secs}s — saved to extension storage. Click "Download results" to download the file.`,
     }));
 
     const counts = backup.counts || {};
@@ -677,7 +677,7 @@ async function doBackupUnlocked({
         const st = categoryStatus[key];
         if (st && !st.ok && !st.skipped) {
           summary.push({
-            label: `${label} — GAGAL (error)`,
+            label: `${label} — FAILED (error)`,
             count: String(st.error || 'unknown'),
             pill: 'error',
           });
@@ -707,7 +707,7 @@ async function doBackupUnlocked({
 // ---------------- download on demand (no auto-download) ----------------
 
 // The last backup is kept in memory for the active dashboard page only.
-// Download happens ONLY when the user clicks "Download hasil".
+// Download happens ONLY when the user clicks "Download results".
 let lastBackupForDownload: UnknownRecord | null = null;
 let lastBackupMeta: {
   encrypt: boolean;
@@ -1000,7 +1000,7 @@ async function retrySiteDataSaveUnlocked(): Promise<boolean> {
         ),
       },
     }));
-    // Koreksi save-failed -> saved ikut tersimpan ke snapshot.
+    // Include save-failed -> saved transitions in the persisted snapshot.
     void persistSiteScanNow(false);
     appendLog(
       'retry: checkpoint save succeeded — save-failed origins are now saved'

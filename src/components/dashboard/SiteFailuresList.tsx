@@ -14,14 +14,14 @@ export function SiteFailuresList({ urlStates }: { urlStates: UrlState[] }) {
   if (!urlStates.length) {
     return (
       <p className="text-muted-foreground text-sm">
-        Belum ada data — jalankan backup dengan kategori website data.
+        No site data yet. Run a backup with the Website Data category enabled.
       </p>
     );
   }
   if (!failed.length) {
     return (
       <p className="text-sm text-green-600 dark:text-green-400">
-        Tidak ada kegagalan. Semua situs berhasil diproses.
+        All sites were processed successfully.
       </p>
     );
   }
@@ -48,9 +48,7 @@ export function SiteFailuresList({ urlStates }: { urlStates: UrlState[] }) {
               )
             }
           >
-            {busy === 'all'
-              ? 'menjalankan…'
-              : `Retry semua (${fetchFailed.length})`}
+            {busy === 'all' ? 'Retrying…' : `Retry all (${fetchFailed.length})`}
           </Button>
         )}
         {saveFailed.length > 0 && (
@@ -61,8 +59,8 @@ export function SiteFailuresList({ urlStates }: { urlStates: UrlState[] }) {
             onClick={() => void runRetry('save', () => retrySiteDataSave())}
           >
             {busy === 'save'
-              ? 'menyimpan…'
-              : `Simpan ulang ${saveFailed.length} gagal simpan`}
+              ? 'Saving…'
+              : `Retry saving ${saveFailed.length} failed ${saveFailed.length === 1 ? 'item' : 'items'}`}
           </Button>
         )}
       </div>
@@ -74,7 +72,7 @@ export function SiteFailuresList({ urlStates }: { urlStates: UrlState[] }) {
           >
             <span className="min-w-0 flex-1 break-all">{u.origin}</span>
             <Badge variant="danger">
-              {isRetryingUrl(u) ? 'mencoba lagi…' : statusLabel(u.status)}
+              {isRetryingUrl(u) ? 'Retrying…' : statusLabel(u.status)}
             </Badge>
             {u.status === 'fetch-failed' && (
               <Button
@@ -100,8 +98,8 @@ export function SiteFailuresList({ urlStates }: { urlStates: UrlState[] }) {
         ))}
       </div>
       <p className="text-muted-foreground text-xs">
-        Retry membuka tab baru — tab lama selalu ditutup dulu. URL gagal simpan
-        tidak diambil ulang, cukup disimpan ulang.
+        Fetch retries close the previous tab before opening another. Save
+        retries reuse the collected data without fetching the URL again.
       </p>
     </div>
   );

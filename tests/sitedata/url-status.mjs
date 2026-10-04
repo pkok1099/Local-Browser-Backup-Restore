@@ -1,7 +1,7 @@
 // Truth table for the failure-list predicate.
 // Regression: retry waves flip the status back to 'fetching' (a manual retry
 // even starts from 'pending'), so filtering on 'fetch-failed' alone made the
-// Kegagalan list flicker mid-crawl and reappear at the end.
+// Failure list flickers mid-crawl and reappears at the end.
 import assert from 'node:assert/strict';
 import { isFailedUrl, isRetryingUrl } from '../../src/lib/url-status.js';
 

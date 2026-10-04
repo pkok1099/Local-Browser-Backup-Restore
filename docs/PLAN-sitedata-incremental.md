@@ -1,84 +1,84 @@
-# Plan: Incremental siteData berbasis history (jalur B) — revisi 3
+# Plan: History-based incremental siteData (path B) — revision 3
 
-Status: DISETUJUI user 2026-10-03 ("Setuju, eksekusi revisi 2") + 5 tambahan.
-Revisi 3 memasukkan kelimanya.
+Status: APPROVED by the user on 2026-10-03 ("Agreed, execute revision 2"), plus five additions.
+Revision 3 incorporates all five additions.
 
-## Tujuan
-Backup terjadwal harian tetap lengkap semua kategori, tapi crawl siteData hanya
-untuk origin yang dikunjungi sejak snapshot terakhir. 15 menit → beberapa menit
-pada hari normal, tanpa mengubah format artefak / restore.
+## Goal
+Daily scheduled backups remain complete for all categories, while the siteData crawl
+covers only origins visited since the last snapshot. On a normal day, this reduces
+the time from 15 minutes to a few minutes without changing the artifact/restore format.
 
-## Keputusan eksplisit
-1. **Plaintext-at-rest**: cache menyimpan site data (dapat memuat token/sesi)
-   plaintext di `chrome.storage.local`. Disadari dan diterima — konsisten dengan
-   preseden `bbr:site-data-checkpoint`. Tidak dienkripsi (kunci enkripsi tidak
-   tersedia saat scheduled run tanpa interaksi user).
-2. **Cache = "snapshot lengkap terakhir"**, ditulis oleh SETIAP run yang
-   menghasilkan siteData sukses & tidak di-stop — manual full maupun scheduled
-   incremental. Alasan: manual full backup me-refresh cache agar scheduled run
-   berikutnya incremental dari titik itu (tidak ada "15 menit kejutan" setelah
-   user baru saja backup manual).
-3. **Partitions tidak di-merge**: ephemeral (terikat tab/frame live saat crawl),
-   fresh-only untuk subset. Hanya `origins` yang durable dan di-merge.
-4. **Fail-safe**: ragu → full crawl, tidak pernah skip buta.
+## Explicit decisions
+1. **Plaintext-at-rest**: the cache stores site data (which may contain tokens/sessions)
+   in plaintext in `chrome.storage.local`. This is understood and accepted — consistent with
+   precedent `bbr:site-data-checkpoint`. It is not encrypted (the encryption key is not
+   available during a scheduled run without user interaction).
+2. **Cache = "last complete snapshot"**, written by every run that
+   successfully produces siteData and is not stopped, including manual full and scheduled
+   incremental runs. A manual full backup therefore refreshes the cache, so the next
+   scheduled run is incremental from that point (no "15-minute surprise" after the
+   user has just made a manual backup).
+3. **Partitions are not merged**: ephemeral data remains bound to the live tab/frame during
+   crawling, and fresh-only data remains limited to the subset. Only durable `origins` are merged.
+4. **Fail-safe**: uncertainty triggers a full crawl; never skip blindly.
 
-## Desain
+## Design
 
-### Modul `src/lib/site-incremental.js` (semua keputusan di sini, glue bodoh)
-Dependency-injected, testable di node polos. Import hanya dari
-`scan-config.js` (data murni) dan `tab-ownership.js` (`originOf`).
+### Module `src/lib/site-incremental.js` (all decisions here; glue is intentionally dumb)
+Dependency-injected and testable in plain Node. Import only from
+`scan-config.js` (pure data) and `tab-ownership.js` (`originOf`).
 
 ```js
 // --- cache ---
 readSiteDataCache(storage) -> { version, savedAt, lastFullAt, origins } | null
-  // null juga saat: storage null, korup, BUKAN object, version mismatch.
-writeSiteDataCache(storage, payload) -> boolean  // false saat gagal, never throw
+  // also null when: storage is null, corrupt, NOT an object, or the version mismatches.
+writeSiteDataCache(storage, payload) -> boolean  // false on failure, never throw
 
-// --- sinyal history ---
+// --- history signal ---
 getVisitedOriginsSince({ history, sinceMs, nowMs, maxResults })
   -> { visited: Set<string>, truncated: boolean }
-  // history null → throw 'history-unavailable' (ditangkap caller → full crawl)
+  // history null → throw 'history-unavailable' (caught by the caller → full crawl)
 
-// --- perencanaan ---
+// --- planning ---
 shouldForceFull({ cache, nowMs, fullIntervalMs }) -> reason: string | null
   // 'no-cache' | 'cache-corrupt' | 'version-mismatch' | 'interval-elapsed' | null
-  // interval: nowMs - lastFullAt >= fullIntervalMs → force (batas tepat 7 hari
-  // ikut force — arah yang aman).
+  // interval: nowMs - lastFullAt >= fullIntervalMs → force (exactly 7 days
+  // also forces it — the safe direction).
 planIncrementalCrawl({ included: string[], cachedOrigins, visited })
   -> { crawl: string[], reuse: string[] }
-  // crawl = included ∩ (visited ∪ belum-pernah-di-cache)
+  // crawl = included ∩ (visited ∪ never-before-cached)
 
-// --- orkestrasi (async, deps di-inject) ---
+// --- orchestration (async, injected dependencies) ---
 computeIncrementalPlan({ storage, history, nowMs, included: string[], config })
   -> { crawlOrigins, cache, fullCrawl: boolean, reason: string | null }
-  // included kosong → { crawlOrigins: [], reason: 'empty-include' } (no-op).
+  // empty included → { crawlOrigins: [], reason: 'empty-include' } (no-op).
   // history throw / truncated / null → fullCrawl, reason 'history-error' /
   // 'history-truncated' / 'history-unavailable'.
 
-// --- finalisasi (murni) ---
+// --- finalization (pure) ---
 mergeIncrementalOrigins({ cachedOrigins, freshOrigins, includedSet: Set })
   -> { [origin]: snapshot }
-  // fresh menang (termasuk snapshot kosong yang legitimate = situs memang
-  // kosong); tanpa snapshot fresh (gagal crawl) → pakai cache (last-known-good);
-  // di luar includedSet → dibuang (tidak masuk merge DAN tidak ditulis ke cache).
+  // fresh wins (including a legitimate empty snapshot = the site is actually
+  // empty); without a fresh snapshot (crawl failure) → use the cache (last-known-good);
+  // outside includedSet → discarded (not merged AND not written to the cache).
 finalizeIncrementalRun({ cache, freshOrigins, included: string[], stopped: boolean,
                          categoryOk: boolean, fullCrawl: boolean, nowMs })
   -> { origins, notes: string[], cachePayload | null }
-  // Selalu merge untuk kelengkapan section (termasuk saat stopped — section
-  // lengkap dari partial fresh + cache).
-  // cachePayload null saat: !categoryOk ATAU stopped (cache lama dipertahankan,
-  // tidak tertimpa data parsial — tambahan user #5).
+  // Always merge for section completeness (including when stopped — the section
+  // is complete from partial fresh + cache).
+  // cachePayload null when: !categoryOk OR stopped (the old cache is preserved,
+  // not overwritten by partial data — user addition #5).
   // lastFullAt: fullCrawl ? nowMs : cache.lastFullAt.
 buildFullCachePayload({ freshOrigins, included: string[] | null, nowMs, version })
-  -> payload  // untuk run full (manual): prune ke include-set.
+  -> payload  // for a full run (manual): prune to the include-set.
 
-// --- notes transparansi ---
+// --- transparency notes ---
 buildIncrementalNotes({ crawled, total, reused, cacheDateStr, fullReason }) -> string[]
-  // cth: "sitedata incremental: 3/42 origin(s) re-crawled (visited since
+  // e.g.: "sitedata incremental: 3/42 origin(s) re-crawled (visited since
   //  2026-10-02); 39 reused from cache (2026-10-01)"
 ```
 
-### Konfigurasi (`SITE_DATA_CONFIG`)
+### Configuration (`SITE_DATA_CONFIG`)
 - `siteDataCacheKey: 'bbr:site-data-cache'`
 - `siteDataCacheVersion: 1`
 - `incrementalFullIntervalMs: 7 * 24 * 3600 * 1000`
@@ -86,7 +86,7 @@ buildIncrementalNotes({ crawled, total, reused, cacheDateStr, fullReason }) -> s
 
 ### Glue `src/dashboard/logic.ts` (`buildBackupObject`)
 ```ts
-// (a) incremental gate — hanya jika flag && siteData dipilih && ada yang di-crawl
+// (a) incremental gate — only when the flag is set, siteData is selected, and something is crawled
 if (collectOptions?.incrementalSiteData === true && selectedCategories.includes('siteData')) {
   const rawList = includedOrigins
     ?? (await discoverOrigins()).origins.map((o) => typeof o === 'string' ? o : o.origin);
@@ -100,8 +100,8 @@ if (collectOptions?.incrementalSiteData === true && selectedCategories.includes(
   };
   effectiveCollectOptions.siteData.includeOrigins = incrementalCtx.plan.crawlOrigins;
 }
-// ... collectAll(...) tidak berubah ...
-// (b) pasca-collect
+// ... collectAll(...) unchanged ...
+// (b) post-collect
 const sdOk = categoryStatus.siteData?.ok === true;
 const sdStopped = (data.siteData as any)?.stopped === true || backupStopFlag?.stop === true;
 if (sdOk && selectedCategories.includes('siteData')) {
@@ -114,8 +114,8 @@ if (sdOk && selectedCategories.includes('siteData')) {
     (data.siteData as any).origins = fin.origins;
     (data.siteData as any).notes.push(...fin.notes);
     if (fin.cachePayload) await writeSiteDataCache(chrome.storage?.local ?? null, fin.cachePayload);
-    // write gagal → best-effort, lanjut (di-log di dalam finalize notes? tidak —
-    // appendLog satu baris di sini).
+    // write failure → best effort, continue (logged in finalize notes? no —
+    // append one line to the log here).
   } else {
     const payload = buildFullCachePayload({
       freshOrigins: (data.siteData as any)?.origins ?? {},
@@ -126,69 +126,69 @@ if (sdOk && selectedCategories.includes('siteData')) {
   }
 }
 ```
-Catatan: `notes` di section selalu array (lihat `notes[]` di sitedata.js).
+Note: `notes` in this section is always an array (see `notes[]` in sitedata.js).
 
 ### Glue `src/dashboard/cloud-ui.ts`
-`runScheduledCloudBackupUnlocked`: tambah
-`collectOptions: { incrementalSiteData: true }` pada `runCloudBackup`.
+`runScheduledCloudBackupUnlocked`: add
+`collectOptions: { incrementalSiteData: true }` to `runCloudBackup`.
 
-## Tugas (TDD red-green-refactor)
+## Tasks (TDD red-green-refactor)
 
-### T1: modul + test
-Kasus `tests/site-incremental.mjs` (15):
-1. tanpa cache → full (`no-cache`)
-2. cache korup / bukan object → full, tanpa throw (#1 user)
+### T1: module + tests
+Cases in `tests/site-incremental.mjs` (15):
+1. no cache → full (`no-cache`)
+2. corrupt cache / not an object → full, without throwing (#1 user)
 3. version mismatch → full (`version-mismatch`) (#2 user)
-4. `now - lastFullAt`: interval-1 → incremental; tepat interval → full;
-   interval+1 → full (#3 user, jam di-inject)
+4. `now - lastFullAt`: interval-1 → incremental; exact interval → full;
+   interval+1 → full (#3 user, injected clock)
 5. history.search throw → full (`history-error`)
-6. hasil == maxResults → full (`history-truncated`)
+6. result == maxResults → full (`history-truncated`)
 7. history null → full (`history-unavailable`)
-8. subset visited → crawl = visited ∪ uncached; sisanya reuse
-9. origin baru (belum di-cache) selalu di-crawl walau tak dikunjungi
-10. origin keluar dari include → dibuang dari merge DAN dari cache tertulis (#4)
-11. snapshot fresh kosong (legitimate) menang atas cache
-12. gagal crawl (tanpa snapshot) → fallback cache
-13. stopped / !categoryOk → `cachePayload: null` (cache lama utuh) (#5)
-14. write gagal (storage throw) → false, tidak throw
+8. visited subset → crawl = visited ∪ uncached; reuse the rest
+9. new origins (not yet cached) are always crawled even if not visited
+10. origins removed from the include set → discarded from the merge AND from the written cache (#4)
+11. an empty fresh snapshot (legitimate) wins over the cache
+12. crawl failure (without a snapshot) → fall back to the cache
+13. stopped / !categoryOk → `cachePayload: null` (old cache remains intact) (#5)
+14. write failure (storage throws) → false, does not throw
 15. read/write round-trip valid
-+ kasus: included kosong → no-op.
-- Merah dulu, implementasi minimum, hijau, refactor.
-- Daftarkan di `package.json` → `test:node`.
++ case: empty included → no-op.
+- Start with a failing test, implement the minimum, make it pass, then refactor.
+- Register it in `package.json` under `test:node`.
 
 ### T2: glue (logic.ts + cloud-ui.ts)
-- `CollectOptions += incrementalSiteData?: boolean`; import modul; glue (a)+(b);
-  satu baris flag di scheduled caller.
-- `npm run check` bersih. Glue tidak di-unit-test di node (alias `@/`) —
-  dinyatakan; dijaga oleh modul yang ter-test penuh + E2E existing.
+- `CollectOptions += incrementalSiteData?: boolean`; import the module; glue (a)+(b);
+  one flag line in the scheduled caller.
+- `npm run check` passes cleanly. Glue is not unit-tested in Node (because of the `@/` alias);
+  this is documented and covered by the fully tested module plus existing E2E tests.
 
-### T3: verifikasi + smoke test manual
+### T3: verification + manual smoke test
 - `node tests/site-incremental.mjs`, `npm run check`, `npm test`,
-  `npm run test:e2e` hijau.
-- Self-review: flag mati → difusi nol; tab-ownership tak tersentuh; no-circular-import.
-- Smoke test manual (user):
-  1. Build baru (`npm run build`), load unpacked di `chrome://extensions`.
-     Persempit site-data include ke 2–3 situs (Pengaturan → site data) agar
-     smoke cepat. Pastikan cloud backup + jadwal sudah terkonfigurasi.
-  2. Run #1 — buka di tab baru:
+  `npm run test:e2e` passes.
+- Self-review: flag off causes no diffusion; tab ownership remains untouched; no circular import.
+- Manual smoke test (user):
+  1. Build a new version (`npm run build`), load unpacked at `chrome://extensions`.
+     Narrow the site-data include list to 2–3 sites (Settings → site data) so the
+     smoke test is quick. Ensure cloud backup + scheduling are configured.
+  2. Run #1 — open in a new tab:
      `chrome-extension://akkfbbaafgpcminophoimghdjgfcblia/dashboard.html?action=cloud-scheduled&reason=smoke1`
-     Tunggu selesai. Ekspektasi: full crawl;
+     Wait for it to finish. Expected: full crawl;
      notes "sitedata: full crawl of 3 origin(s) (no-cache)".
-  3. Kunjungi 1 dari 3 situs, tunggu beberapa detik (tercatat di history).
-  4. Run #2 — buka di tab baru:
+  3. Visit 1 of the 3 sites and wait a few seconds (so it is recorded in history).
+  4. Run #2 — open in a new tab:
      `chrome-extension://akkfbbaafgpcminophoimghdjgfcblia/dashboard.html?action=cloud-scheduled&reason=smoke2`
-  5. Verifikasi pada artefak (atau halaman Log sebelum tab tertutup otomatis):
+  5. Verify in the artifact (or on the Log page before the tab closes automatically):
      notes "sitedata incremental: 1/3 origin(s) re-crawled (visited since
-     <tgl>); 2 reused from cache (<tgl>)".
-  6. Kembalikan include list ke semula.
+     <date>); 2 reused from cache (<date>)".
+  6. Restore the include list to its original state.
 
-## Risiko
-- History di-clear → cache dipakai ulang + notes; force-full mingguan pulih.
-- Duplikasi lokal ≈ ukuran section siteData (`unlimitedStorage` ada).
-- Run pertama pasca-upgrade = full crawl (catatan rilis).
-- `chrome.history.search` `text:''` mengembalikan semua item dalam rentang —
-  maxResults 50000; truncation → full (aman).
+## Risks
+- If history is cleared, reuse the cache and notes; the weekly force-full run recovers.
+- Local duplication is approximately the size of the siteData section (`unlimitedStorage` is available).
+- The first run after an upgrade is a full crawl (release note).
+- `chrome.history.search` with `text:''` returns all items in the range, up to
+  maxResults 50000; truncation triggers a full crawl (the safe behavior).
 
-## Di luar cakupan
-- Toggle UI; E2E otomatis khusus incremental; incremental 11 kategori lain;
-  perubahan format artefak/restore/checkpoint.
+## Out of scope
+- Toggle UI; automated E2E tests specific to incremental mode; incremental support for 11 other categories;
+  changes to the artifact/restore/checkpoint format.

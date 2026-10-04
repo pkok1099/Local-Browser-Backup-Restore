@@ -28,16 +28,16 @@ const PasswordDialog = lazy(() =>
 );
 const SettingsPage = lazy(() =>
   loadRouteChunk(
-    'pengaturan',
+    'settings',
     () => import('@/components/dashboard/SettingsPage')
   )
 );
 const ResultsPage = lazy(() =>
-  loadRouteChunk('hasil', () => import('@/components/dashboard/ResultsPage'))
+  loadRouteChunk('results', () => import('@/components/dashboard/ResultsPage'))
 );
 const FailuresPage = lazy(() =>
   loadRouteChunk(
-    'kegagalan',
+    'failures',
     () => import('@/components/dashboard/FailuresPage')
   )
 );
@@ -45,7 +45,7 @@ const LogPage = lazy(() =>
   loadRouteChunk('log', () => import('@/components/dashboard/LogPage'))
 );
 const MorePage = lazy(() =>
-  loadRouteChunk('lainnya', () => import('@/components/dashboard/MorePage'))
+  loadRouteChunk('more', () => import('@/components/dashboard/MorePage'))
 );
 
 class RouteChunkErrorBoundary extends Component<
@@ -66,15 +66,15 @@ class RouteChunkErrorBoundary extends Component<
           className="rounded-lg border bg-card p-4 text-sm text-muted-foreground"
         >
           <p>
-            Halaman gagal dimuat. Dashboard sudah mencoba memuat ulang satu
-            kali.
+            This page failed to load. The dashboard already tried reloading it
+            once.
           </p>
           <button
             type="button"
             className="mt-3 min-h-11 rounded-md bg-primary px-4 py-2 font-medium text-primary-foreground"
             onClick={() => retryRouteChunk(this.props.route)}
           >
-            Muat ulang dan coba lagi
+            Reload and try again
           </button>
         </div>
       );
@@ -89,24 +89,38 @@ class RouteChunkErrorBoundary extends Component<
 // user switches pages. Separate HTML files would destroy that context and
 // kill the crawl.
 const NAV = [
-  { id: 'ringkasan', label: 'Ringkasan' },
-  { id: 'pengaturan', label: 'Pengaturan' },
-  { id: 'hasil', label: 'Hasil' },
-  { id: 'kegagalan', label: 'Kegagalan' },
+  { id: 'summary', label: 'Summary' },
+  { id: 'settings', label: 'Settings' },
+  { id: 'results', label: 'Results' },
+  { id: 'failures', label: 'Failures' },
   { id: 'log', label: 'Log' },
-  { id: 'lainnya', label: 'Lainnya' },
+  { id: 'more', label: 'More' },
 ] as const;
 
+// Keep previously shared Indonesian hash routes working, but use English routes
+// for all new navigation.
+const LEGACY_ROUTE_ALIASES: Record<string, string> = {
+  ringkasan: 'summary',
+  pengaturan: 'settings',
+  hasil: 'results',
+  kegagalan: 'failures',
+  lainnya: 'more',
+};
+
 function useHashRoute(): string {
-  const read = () =>
-    (window.location.hash || '').replace(/^#\/?/, '') || 'ringkasan';
+  const read = () => {
+    const raw = (window.location.hash || '').replace(/^#\/?/, '') || 'summary';
+    const route = LEGACY_ROUTE_ALIASES[raw] || raw;
+    if (route !== raw) window.history.replaceState(null, '', `#/${route}`);
+    return route;
+  };
   const [route, setRoute] = useState(read);
   useEffect(() => {
     const onHash = () => setRoute(read());
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
-  return NAV.some((p) => p.id === route) ? route : 'ringkasan';
+  return NAV.some((p) => p.id === route) ? route : 'summary';
 }
 
 export default function App() {
@@ -132,7 +146,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (route === 'lainnya' || state.backup.running) setToasterReady(true);
+    if (route === 'more' || state.backup.running) setToasterReady(true);
   }, [route, state.backup.running]);
 
   const failCount =
@@ -142,7 +156,7 @@ export default function App() {
     <div className="min-h-screen bg-background text-foreground">
       <Header subline={state.subline} />
       <nav
-        aria-label="Halaman dashboard"
+        aria-label="Dashboard pages"
         className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur"
       >
         <div className="mx-auto flex w-full max-w-[880px] gap-1 overflow-x-auto px-4 py-2 max-sm:px-2.5">
@@ -158,7 +172,7 @@ export default function App() {
               }`}
             >
               {p.label}
-              {p.id === 'kegagalan' && failCount > 0 && (
+              {p.id === 'failures' && failCount > 0 && (
                 <span className="rounded-full bg-red-600 px-1.5 text-[11px] font-bold text-white">
                   {failCount}
                 </span>
@@ -176,16 +190,16 @@ export default function App() {
                 aria-live="polite"
                 className="rounded-lg border bg-card p-4 text-sm text-muted-foreground"
               >
-                Memuat halaman…
+                Loading page…
               </div>
             }
           >
-            {route === 'ringkasan' && <SummaryPage />}
-            {route === 'pengaturan' && <SettingsPage />}
-            {route === 'hasil' && <ResultsPage />}
-            {route === 'kegagalan' && <FailuresPage />}
+            {route === 'summary' && <SummaryPage />}
+            {route === 'settings' && <SettingsPage />}
+            {route === 'results' && <ResultsPage />}
+            {route === 'failures' && <FailuresPage />}
             {route === 'log' && <LogPage />}
-            {route === 'lainnya' && <MorePage />}
+            {route === 'more' && <MorePage />}
           </Suspense>
         </RouteChunkErrorBoundary>
         {state.password.open && (

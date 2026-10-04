@@ -143,8 +143,8 @@ export type AppState = {
     summary: SummaryLine[];
     foldersNote: string | null;
     siteScan: SiteScanStats | null;
-    // Asal data siteScan: runId/waktu dari snapshot yang dipersist ke
-    // chrome.storage.local (bbr:last-site-scan). null = belum ada snapshot.
+    // Source of siteScan data: runId/timestamp from the snapshot persisted to
+    // chrome.storage.local (bbr:last-site-scan). null means no snapshot exists yet.
     siteScanMeta: {
       runId: string;
       startedAt: number;
