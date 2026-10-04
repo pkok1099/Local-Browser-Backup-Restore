@@ -16,11 +16,11 @@
 >   against a system Chromium).
 >
 > New suites (see `docs/E2E.md`):
-> - `npm test` (Node): existing 6 suites + `tests/cloud-provider-guard.mjs`
+> - `npm test` (Node): existing 6 suites + `tests/cloud/cloud-provider-guard.mjs`
 >   (provider-layer plaintext policy over real HTTP against the simulator) +
->   `tests/sitedata-tab-cleanup.mjs` (scan tabs always closed, incl.
+>   `tests/sitedata/sitedata-tab-cleanup.mjs` (scan tabs always closed, incl.
 >   never-ready tabs and midway open failures) +
->   `tests/theme-mode.mjs` (dashboard theme module: boot, persistence,
+>   `tests/dashboard/theme-mode.mjs` (dashboard theme module: boot, persistence,
 >   system-follow) — all PASS.
 > - `npm run test:e2e` (new): `local-roundtrip` (seed → encrypted file via real
 >   `chrome.downloads` → destroy → wrong-password rejected → restore exact →
