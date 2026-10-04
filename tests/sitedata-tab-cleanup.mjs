@@ -55,6 +55,7 @@ function makeFakeChrome({
   const deletedHistory = [];
   const groupCalls = [];
   const groupUpdates = [];
+  const dnrCalls = [];
   const events = [];
   let nextId = 100;
   let openCount = 0;
@@ -122,6 +123,18 @@ function makeFakeChrome({
         }
         return { ...t, status: 'complete' };
       },
+      update: async (id, props) => {
+        const t = tabsById.get(id);
+        if (!t) throw new Error('fake: no such tab');
+        // Navigation restarts loading (mirrors real Chrome).
+        if (props && typeof props.url === 'string') {
+          t.url = props.url;
+          t.status = 'loading';
+          t.createdAt = Date.now();
+        }
+        events.push(`update:${id}`);
+        return { ...t };
+      },
       remove: async (id) => {
         removed.push(id);
         events.push(`remove:${id}`);
@@ -159,6 +172,13 @@ function makeFakeChrome({
         return {};
       },
       get: async (id) => ({ id, title: 'BBR Site Scan' }),
+    },
+    declarativeNetRequest: {
+      updateSessionRules: async (opts) => {
+        dnrCalls.push(opts);
+        events.push('dnr:updateSessionRules');
+      },
+      getSessionRules: async () => [],
     },
     debugger: {
       attach: (target, version, cb) => {
@@ -264,6 +284,7 @@ function makeFakeChrome({
     deletedHistory,
     groupCalls,
     groupUpdates,
+    dnrCalls,
     events,
     getMaxOpen: () => maxOpen,
     noteMaxSlots: (n) => {
@@ -325,6 +346,31 @@ const {
   assert.ok(
     fake.getMaxOpen() > 1,
     `opens must be parallel, peak was ${fake.getMaxOpen()}`
+  );
+  // Resource blocking: one DNR session rule per created scan tab, applied
+  // before navigation (create blank -> await rule -> tabs.update).
+  const addedRules = fake.dnrCalls.flatMap((c) => c.addRules || []);
+  assert.equal(
+    addedRules.length,
+    fake.created.length,
+    `one blocking rule per created tab, got ${addedRules.length} rules for ${fake.created.length} tabs`
+  );
+  const createdIds = new Set(fake.created.map((t) => t.id));
+  assert.ok(
+    addedRules.every(
+      (r) =>
+        r.action.type === 'block' &&
+        r.condition.tabIds.length === 1 &&
+        createdIds.has(r.condition.tabIds[0]) &&
+        !r.condition.resourceTypes.includes('main_frame')
+    ),
+    'every rule must be a tab-scoped block that spares main_frame'
+  );
+  const removedIds = fake.dnrCalls.flatMap((c) => c.removeRuleIds || []);
+  assert.equal(
+    removedIds.length,
+    addedRules.length,
+    'every blocking rule must be removed when its tab finishes'
   );
   assert.ok(
     fake.getMaxSlotsSeen() <= 8,

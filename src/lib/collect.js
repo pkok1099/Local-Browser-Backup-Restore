@@ -111,7 +111,15 @@ function serTab(t) {
   return o;
 }
 
-async function collectTabsWindows() {
+async function collectTabsWindows(_progress, topts) {
+  // Granular categories (Batch 2): tabs / windows / tabGroups. The `!== false`
+  // checks keep the legacy behavior (collect everything) when the caller
+  // passes no options. The window SET is identical in every mode: the tabs
+  // toggle only empties windows[].tabs, and the flat top-level tabs[] exists
+  // only when windows are off (so all-on output stays deep-equal to legacy).
+  const includeTabs = topts?.includeTabs !== false;
+  const includeWindows = topts?.includeWindows !== false;
+  const includeTabGroups = topts?.includeTabGroups !== false;
   const notes = [];
   const isExtensionUiTab = (t) =>
     /^(chrome-extension:|devtools:|chrome-untrusted:)/.test(t.url || '');
@@ -120,6 +128,7 @@ async function collectTabsWindows() {
     windowTypes: ['normal', 'popup'],
   });
   const windows = [];
+  const flatTabs = [];
   let excludedTabs = 0;
   for (const w of wins) {
     const tabs = (w.tabs || []).slice().sort((a, b) => a.index - b.index);
@@ -127,34 +136,47 @@ async function collectTabsWindows() {
       (t) => !t.incognito && !isExtensionUiTab(t)
     );
     excludedTabs += tabs.length - visibleTabs.length;
-    if (tabs.length !== visibleTabs.length && visibleTabs.length === 0) {
+    if (
+      includeWindows &&
+      tabs.length !== visibleTabs.length &&
+      visibleTabs.length === 0
+    ) {
+      // The window SET is toggle-independent: a window with no visible tabs
+      // is skipped in every mode (same as legacy).
       notes.push(
         'Window containing only extension-UI/incognito tabs excluded (not user data).'
       );
       continue;
     }
-    if (tabs.length !== visibleTabs.length) {
+    if (includeTabs && tabs.length !== visibleTabs.length) {
       notes.push(
         `${tabs.length - visibleTabs.length} extension-UI/incognito tab(s) excluded (not user data).`
       );
     }
-    windows.push({
-      type: w.type,
-      state: w.state,
-      focused: !!w.focused,
-      alwaysOnTop: !!w.alwaysOnTop,
-      bounds: { left: w.left, top: w.top, width: w.width, height: w.height },
-      tabs: visibleTabs.map(serTab),
-    });
+    if (includeWindows) {
+      windows.push({
+        type: w.type,
+        state: w.state,
+        focused: !!w.focused,
+        alwaysOnTop: !!w.alwaysOnTop,
+        bounds: { left: w.left, top: w.top, width: w.width, height: w.height },
+        tabs: includeTabs ? visibleTabs.map(serTab) : [],
+      });
+    } else if (includeTabs) {
+      // No window layout: keep the tabs flat with their old windowId so
+      // restore can regroup them into fresh windows.
+      for (const t of visibleTabs)
+        flatTabs.push({ ...serTab(t), windowId: w.id });
+    }
   }
-  if (excludedTabs > 0) {
+  if (includeTabs && excludedTabs > 0) {
     notes.push(
       `${excludedTabs} extension-UI tab(s) (chrome-extension://, devtools://) and any incognito tabs excluded — these are UI surfaces, not user data.`
     );
   }
 
   let tabGroups = [];
-  if (chrome.tabGroups) {
+  if (includeTabGroups && chrome.tabGroups) {
     const groups = await chrome.tabGroups.query({});
     tabGroups = groups.map((g) => ({
       groupId: g.id,
@@ -165,6 +187,7 @@ async function collectTabsWindows() {
     }));
   }
   const out = { windows, tabGroups };
+  if (!includeWindows && includeTabs) out.tabs = flatTabs;
   if (notes.length) out.notes = notes;
   return out;
 }
@@ -205,7 +228,7 @@ function serSessionItem(item) {
   return o;
 }
 
-async function collectSessions() {
+async function collectSessions(progress, sopts) {
   const max = chrome.sessions.MAX_SESSION_RESULTS || 25;
   const recent = await chrome.sessions.getRecentlyClosed({ maxResults: max });
   // Exclude the site-data scanner's own tab closures — they are tool noise,
@@ -217,10 +240,18 @@ async function collectSessions() {
     if (item.window) for (const t of item.window.tabs || []) urls.push(t.url);
     return urls.some((u) => u.includes('/__bbr_site_scan__'));
   };
+  // Granular categories: sessions_tabs / sessions_windows. The `=== false`
+  // checks keep the legacy behavior (collect everything) when the caller
+  // passes no options; items with neither tab nor window are kept.
+  const typeSelected = (it) =>
+    !(
+      (it.tab && sopts?.includeTabs === false) ||
+      (it.window && sopts?.includeWindows === false)
+    );
   const out = {
     maxSessionResults: max,
     recentlyClosed: (recent || [])
-      .filter((it) => !isScanNoise(it))
+      .filter((it) => !isScanNoise(it) && typeSelected(it))
       .map(serSessionItem),
   };
   if (typeof chrome.sessions.getDevices === 'function') {
@@ -228,7 +259,7 @@ async function collectSessions() {
       const devices = await chrome.sessions.getDevices();
       out.devices = (devices || []).map((d) => ({
         deviceName: d.deviceName,
-        sessions: (d.sessions || []).map(serSessionItem),
+        sessions: (d.sessions || []).filter(typeSelected).map(serSessionItem),
       }));
     } catch (e) {
       out.devicesNote = 'getDevices() failed: ' + (e.message || 'unknown');
@@ -259,7 +290,149 @@ function serCookie(c) {
   return o;
 }
 
-async function collectCookies() {
+function cookieKey(c) {
+  return `${c.name}|${c.domain}|${c.path}|${JSON.stringify(c.partitionKey ?? null)}`;
+}
+
+// Candidate topLevelSites for partitioned-cookie lookup, derived from open
+// tabs, history and reading-list URLs. There is no API to enumerate partition
+// keys, so this is best-effort coverage.
+async function derivePartitionCandidates(notes) {
+  const candidates = new Set();
+  const addCandidate = (url) => {
+    try {
+      if (!url) return;
+      const u = new URL(url);
+      if (u.protocol === 'https:' || u.protocol === 'http:')
+        candidates.add(u.origin);
+    } catch (e) {
+      /* ignore malformed */
+    }
+  };
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const t of tabs) addCandidate(t.url);
+    const hist = await chrome.history.search({
+      text: '',
+      startTime: 0,
+      maxResults: 2000,
+    });
+    for (const h of hist) addCandidate(h.url);
+    if (chrome.readingList && typeof chrome.readingList.query === 'function') {
+      for (const e of await chrome.readingList.query({})) addCandidate(e.url);
+    }
+  } catch (e) {
+    notes.push('partition-key candidate scan incomplete: ' + (e.message || e));
+  }
+  return candidates;
+}
+
+// Legacy partitioned-cookie scan: one getAll per candidate topLevelSite.
+// Kept as fallback for Chrome versions where the partitionKey:{} wildcard is
+// rejected or silently under-returns, and as the E2E equivalence oracle.
+async function scanPartitionedCookiesLegacy(
+  storeId,
+  candidates,
+  seen,
+  cookies,
+  notes
+) {
+  let scanned = 0;
+  for (const site of candidates) {
+    if (scanned >= 3000) {
+      notes.push('partition scan capped at 3000 candidate sites');
+      break;
+    }
+    scanned++;
+    try {
+      const plist = await chrome.cookies.getAll({
+        storeId,
+        partitionKey: { topLevelSite: site },
+      });
+      for (const c of plist) {
+        const key = cookieKey(c);
+        if (!seen.has(key)) {
+          seen.add(key);
+          cookies.push(serCookie(c));
+        }
+      }
+    } catch (e) {
+      /* skip candidate */
+    }
+    if (scanned % 250 === 0) await yieldToUI();
+  }
+  if (candidates.size > 0) {
+    notes.push(
+      `Partitioned (CHIPS) cookies: ${scanned} candidate partition keys scanned (derived from tabs/history/reading list; there is no enumeration API).`
+    );
+  }
+  return scanned;
+}
+
+async function collectStoreCookiesLegacy(storeId, notes) {
+  const list = await chrome.cookies.getAll({ storeId });
+  const cookies = list.map(serCookie);
+  const candidates = await derivePartitionCandidates(notes);
+  const seen = new Set(cookies.map(cookieKey));
+  await scanPartitionedCookiesLegacy(storeId, candidates, seen, cookies, notes);
+  return cookies;
+}
+
+async function collectStoreCookies(storeId, notes) {
+  // Fast path: partitionKey:{} (empty object, NOT absent) returns ALL
+  // partitions — plain and partitioned — in a single query. Validated on
+  // Chrome 153; absent partitionKey means "unpartitioned only", while the
+  // empty object means "every partition". Some Chrome versions (e.g. 126,
+  // 128 reports) reject or silently under-return the empty-object form, so
+  // both failure modes have a fallback below.
+  try {
+    const all = await chrome.cookies.getAll({ storeId, partitionKey: {} });
+    const cookies = all.map(serCookie);
+    // Silent-failure guard: if the wildcard returned zero partitioned cookies
+    // but candidate sites exist, spot-check one candidate with an explicit
+    // partitionKey. If the spot check finds partitioned cookies the wildcard
+    // missed, the wildcard silently under-returned — fall back.
+    const candidates = await derivePartitionCandidates(notes);
+    if (
+      candidates.size > 0 &&
+      !cookies.some((c) => c.partitionKey !== undefined)
+    ) {
+      const [sample] = candidates;
+      let spotFound = false;
+      try {
+        const spot = await chrome.cookies.getAll({
+          storeId,
+          partitionKey: { topLevelSite: sample },
+        });
+        spotFound = spot.some((c) => c.partitionKey !== undefined);
+      } catch (e) {
+        /* spot check failed — trust the wildcard */
+      }
+      if (spotFound) {
+        notes.push(
+          'partitionKey:{} silently missed partitioned cookies — falling back to candidate scan'
+        );
+        return collectStoreCookiesLegacy(storeId, notes);
+      }
+    }
+    const nPartitioned = cookies.filter(
+      (c) => c.partitionKey !== undefined
+    ).length;
+    if (nPartitioned > 0) {
+      notes.push(
+        `Cookies: partitionKey:{} wildcard returned ${cookies.length} cookies (${nPartitioned} partitioned) in one query.`
+      );
+    }
+    return cookies;
+  } catch (e) {
+    notes.push(
+      'partitionKey:{} wildcard rejected by this Chrome version — falling back to candidate scan'
+    );
+    return collectStoreCookiesLegacy(storeId, notes);
+  }
+}
+
+async function collectCookies(progress, copts) {
   const notes = [];
   const stores = await chrome.cookies.getAllCookieStores();
   let cookies = [];
@@ -270,84 +443,31 @@ async function collectCookies() {
       );
       continue;
     }
-    const list = await chrome.cookies.getAll({ storeId: st.id });
-    cookies = cookies.concat(list.map(serCookie));
-
-    // Partitioned (CHIPS) cookies are INVISIBLE to a plain getAll(): they only
-    // come back when the query carries an explicit partitionKey. There is no API
-    // to enumerate partition keys, so candidate topLevelSites are derived from
-    // open tabs, history and reading-list URLs (best possible coverage).
-    const candidates = new Set();
-    const addCandidate = (url) => {
-      try {
-        if (!url) return;
-        const u = new URL(url);
-        if (u.protocol === 'https:' || u.protocol === 'http:')
-          candidates.add(u.origin);
-      } catch (e) {
-        /* ignore malformed */
-      }
-    };
-    try {
-      const tabs = await chrome.tabs.query({});
-      for (const t of tabs) addCandidate(t.url);
-      const hist = await chrome.history.search({
-        text: '',
-        startTime: 0,
-        maxResults: 2000,
-      });
-      for (const h of hist) addCandidate(h.url);
-      if (
-        chrome.readingList &&
-        typeof chrome.readingList.query === 'function'
-      ) {
-        for (const e of await chrome.readingList.query({})) addCandidate(e.url);
-      }
-    } catch (e) {
-      notes.push(
-        'partition-key candidate scan incomplete: ' + (e.message || e)
-      );
-    }
-    let scanned = 0;
-    const seen = new Set(
-      cookies.map(
-        (c) =>
-          `${c.name}|${c.domain}|${c.path}|${JSON.stringify(c.partitionKey ?? null)}`
-      )
-    );
-    for (const site of candidates) {
-      if (scanned >= 3000) {
-        notes.push('partition scan capped at 3000 candidate sites');
-        break;
-      }
-      scanned++;
-      try {
-        const plist = await chrome.cookies.getAll({
-          storeId: st.id,
-          partitionKey: { topLevelSite: site },
-        });
-        for (const c of plist) {
-          const key = `${c.name}|${c.domain}|${c.path}|${JSON.stringify(c.partitionKey ?? null)}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            cookies.push(serCookie(c));
-          }
-        }
-      } catch (e) {
-        /* skip candidate */
-      }
-      if (scanned % 250 === 0) await yieldToUI();
-    }
-    if (candidates.size > 0) {
-      notes.push(
-        `Partitioned (CHIPS) cookies: ${scanned} candidate partition keys scanned (derived from tabs/history/reading list; there is no enumeration API).`
-      );
-    }
+    cookies = cookies.concat(await collectStoreCookies(st.id, notes));
   }
+  // Granular categories: cookies_plain / cookies_partitioned. The `!== false`
+  // checks keep the legacy behavior (collect everything) when the caller
+  // passes no options; partitioned cookies carry `partitionKey !== undefined`.
+  cookies = cookies.filter((c) =>
+    c.partitionKey !== undefined
+      ? copts?.includePartitioned !== false
+      : copts?.includePlain !== false
+  );
   const out = { cookies };
   if (notes.length) out.notes = notes;
   return out;
 }
+
+// Exported for the restore UI (granular row ids) and tests: the legacy path
+// is the E2E equivalence oracle for the wildcard (kept during the transition
+// while the empty-object form's cross-version behavior is still being
+// validated).
+export {
+  collectCookies,
+  collectTabsWindows,
+  derivePartitionCandidates,
+  scanPartitionedCookiesLegacy,
+};
 
 // ---------- downloads (metadata only) ----------
 
@@ -482,6 +602,31 @@ async function collectProfile() {
 
 // ---------- orchestrator ----------
 
+// Granular backup categories: a legacy category id can be refined into
+// sub-category ids. A collector runs when its legacy id OR any of its
+// granular members is selected. siteData members are listed here for the gate
+// only — their per-flag derivation is handled by another part of Batch 1.
+// Exported at the definition site (also used by the restore pre-filter);
+// the sorted export list above keeps the test-oracle exports together.
+export const CATEGORY_GROUP_MEMBERS = {
+  cookies: ['cookies_plain', 'cookies_partitioned'],
+  sessions: ['sessions_tabs', 'sessions_windows'],
+  siteData: [
+    'siteData_localStorage',
+    'siteData_indexedDB',
+    'siteData_otherStorage',
+  ],
+  tabsWindows: ['tabs', 'windows', 'tabGroups'],
+};
+
+export function subCategorySelected(selectedCategories, legacyId, granularId) {
+  if (!Array.isArray(selectedCategories)) return true;
+  return (
+    selectedCategories.includes(legacyId) ||
+    selectedCategories.includes(granularId)
+  );
+}
+
 const COLLECTORS = [
   ['bookmarks', collectBookmarks],
   ['history', collectHistory],
@@ -519,7 +664,9 @@ export function computeCounts(data) {
   if (data.history) c.history = data.history.items.length;
   if (data.tabsWindows) {
     c.windows = data.tabsWindows.windows.length;
-    c.tabs = data.tabsWindows.windows.reduce((a, w) => a + w.tabs.length, 0);
+    c.tabs =
+      data.tabsWindows.windows.reduce((a, w) => a + (w.tabs || []).length, 0) +
+      (data.tabsWindows.tabs || []).length;
     c.tabGroups = data.tabsWindows.tabGroups.length;
   }
   if (data.sessions)
@@ -556,9 +703,36 @@ export async function collectAll(progress, options) {
   const selected = Array.isArray(opts.selectedCategories)
     ? new Set(opts.selectedCategories)
     : null;
-  const activeCount = COLLECTORS.filter(
-    ([name]) => !selected || selected.has(name)
-  ).length;
+  const isActive = (name) =>
+    !selected ||
+    selected.has(name) ||
+    (CATEGORY_GROUP_MEMBERS[name] || []).some((m) => selected.has(m));
+  const collectorOptsFor = (name) => {
+    const sc = opts.selectedCategories;
+    if (name === 'cookies')
+      return {
+        includePlain: subCategorySelected(sc, 'cookies', 'cookies_plain'),
+        includePartitioned: subCategorySelected(
+          sc,
+          'cookies',
+          'cookies_partitioned'
+        ),
+      };
+    if (name === 'sessions')
+      return {
+        includeTabs: subCategorySelected(sc, 'sessions', 'sessions_tabs'),
+        includeWindows: subCategorySelected(sc, 'sessions', 'sessions_windows'),
+      };
+    if (name === 'tabsWindows')
+      return {
+        includeTabs: subCategorySelected(sc, 'tabsWindows', 'tabs'),
+        includeWindows: subCategorySelected(sc, 'tabsWindows', 'windows'),
+        includeTabGroups: subCategorySelected(sc, 'tabsWindows', 'tabGroups'),
+      };
+    if (name === 'siteData') return opts.siteData || undefined;
+    return undefined;
+  };
+  const activeCount = COLLECTORS.filter(([name]) => isActive(name)).length;
   const total = activeCount || 1;
   const clamp01 = (f) =>
     typeof f === 'number' && Number.isFinite(f)
@@ -568,7 +742,7 @@ export async function collectAll(progress, options) {
   const data = {};
   let doneCount = 0;
   for (const [name, fn] of COLLECTORS) {
-    if (selected && !selected.has(name)) {
+    if (!isActive(name)) {
       categoryStatus[name] = { ok: false, skipped: true };
       continue;
     }
@@ -585,7 +759,7 @@ export async function collectAll(progress, options) {
             (doneCount + clamp01(frac)) / total,
             stats
           ),
-        name === 'siteData' ? opts.siteData || {} : undefined
+        collectorOptsFor(name)
       );
       categoryStatus[name] = { ok: true };
     } catch (e) {

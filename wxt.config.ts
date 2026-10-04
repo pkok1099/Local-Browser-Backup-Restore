@@ -28,14 +28,18 @@ export default defineConfig({
       'management',
       'scripting',
       'debugger',
+      'declarativeNetRequest',
       'alarms',
-      'system.cpu'
+      'system.cpu',
     ],
     host_permissions: ['http://*/*', 'https://*/*'],
     icons: { 128: 'icon.png' },
-    action: { default_title: 'Open Browser Backup dashboard', default_icon: 'icon.png' }
+    action: {
+      default_title: 'Open Browser Backup dashboard',
+      default_icon: 'icon.png',
+    },
   },
   vite: () => ({
-    plugins: [tailwindcss()]
-  })
+    plugins: [tailwindcss()],
+  }),
 });

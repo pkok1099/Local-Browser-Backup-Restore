@@ -40,6 +40,11 @@ import {
   SCAN_ERROR_GROUP_COLOR,
 } from './scan-groups.js';
 import {
+  applyScanBlocking,
+  clearScanBlocking,
+  clearAllScanBlocking,
+} from './scan-resource-blocking.js';
+import {
   clampScanWindow,
   clampInt,
   createSlotPool,
@@ -379,7 +384,7 @@ async function readTabSnapshot(tabId, lib, opts) {
     const snapshot = await evalJsonViaTx(
       dbg,
       `
-      const r = await __BBR.readSiteAll({ fetchScript: ${!!opts.fetchScript}, opfs: ${opts.opfs !== false}, buckets: ${opts.buckets !== false}, sessionStorage: ${opts.sessionStorage !== false}, serviceWorkers: ${opts.serviceWorkers !== false} });
+      const r = await __BBR.readSiteAll({ fetchScript: ${!!opts.fetchScript}, opfs: ${opts.opfs !== false}, buckets: ${opts.buckets !== false}, sessionStorage: ${opts.sessionStorage !== false}, serviceWorkers: ${opts.serviceWorkers !== false}, localStorage: ${opts.localStorage !== false}, indexedDB: ${opts.indexedDB !== false}, otherStorage: ${opts.otherStorage !== false} });
       return __BBR.setTx(JSON.stringify(r));
     `
     );
@@ -650,6 +655,24 @@ function siteDataCategoryFailures(snapshot) {
   return failures;
 }
 
+// Pure mapping: dashboard collectSiteData opts -> page-side read flags for
+// __BBR.readSiteAll. Exported so unit tests can cover the flag semantics
+// without chrome or pagelib. Granular categories default ON (legacy
+// behavior); the non-restorable sessionStorage/serviceWorkers default OFF.
+export function buildSiteReadOpts(opts = {}) {
+  return {
+    fetchScript: opts.fetchScript !== false,
+    // Non-restorable categories default OFF (not captured at all — saves time
+    // and storage). See SITE_DATA_INCLUDE in backup-categories.ts.
+    sessionStorage: opts.includeSessionStorage === true,
+    serviceWorkers: opts.includeServiceWorkers === true,
+    // Granular storage categories default ON (legacy behavior).
+    localStorage: opts.includeLocalStorage !== false,
+    indexedDB: opts.includeIndexedDB !== false,
+    otherStorage: opts.includeOtherStorage !== false,
+  };
+}
+
 export async function collectSiteData(progress, opts = {}) {
   const lib = await getPagelib();
   const notes = [];
@@ -712,23 +735,20 @@ export async function collectSiteData(progress, opts = {}) {
   // progress carries (msg, frac, stats): frac is 0..1 within the siteData
   // phase so the dashboard progress bar stays accurate; stats carries the
   // live scan counters (tabs in group, slots, fetched/saved/failed, window).
-  const readOpts = {
-    fetchScript: opts.fetchScript !== false,
-    // Non-restorable categories default OFF (not captured at all — saves time
-    // and storage). See SITE_DATA_INCLUDE in backup-categories.ts.
-    sessionStorage: opts.includeSessionStorage === true,
-    serviceWorkers: opts.includeServiceWorkers === true,
-  };
+  const readOpts = buildSiteReadOpts(opts);
   function logExcludedReadCategories(options) {
-    if (options.sessionStorage && options.serviceWorkers) return;
     const skipped = [
       ...(!options.sessionStorage ? ['sessionStorage'] : []),
       ...(!options.serviceWorkers ? ['serviceWorkers'] : []),
+      ...(!options.localStorage ? ['localStorage'] : []),
+      ...(!options.indexedDB ? ['indexedDB'] : []),
+      ...(!options.otherStorage ? ['otherStorage'] : []),
     ];
+    if (!skipped.length) return;
     log(
       'INFO',
       'SYSTEM',
-      `site-data capture excludes: ${skipped.join(', ')} (not reliably restorable; enable in Pengaturan to include)`,
+      `site-data capture excludes: ${skipped.join(', ')} (not captured; enable in Pengaturan to include)`,
       { excludedCategories: skipped }
     );
   }
@@ -1236,6 +1256,17 @@ export async function collectSiteData(progress, opts = {}) {
     (reason) => haltCrawl(reason, true),
     log
   );
+  // Sweep leftover subresource-blocking rules from a previous run that died
+  // before finishScanTab (session rules survive a dead worker).
+  try {
+    const swept = await clearAllScanBlocking();
+    if (swept > 0)
+      log('INFO', 'SYSTEM', `cleared ${swept} leftover scan blocking rule(s)`, {
+        crawlId,
+      });
+  } catch (e) {
+    /* best-effort */
+  }
   // Persist owned IDs for crash recovery (dashboard reopen cleans by ID,
   // never by query). Best-effort; failures never stop the crawl.
   const persistOwnedIds = async () => {
@@ -1271,6 +1302,16 @@ export async function collectSiteData(progress, opts = {}) {
     if (rec.finished) return;
     rec.finished = true;
     if (rec.tab) {
+      // Drop the subresource-blocking rule: the tab is going away (or was
+      // taken over — either way we must not keep blocking its requests).
+      if (rec.blockRuleId !== null && rec.blockRuleId !== undefined) {
+        try {
+          await clearScanBlocking(rec.blockRuleId);
+        } catch (e) {
+          /* best-effort; startup cleanup sweeps leftovers */
+        }
+        rec.blockRuleId = null;
+      }
       const st = await ownership.safeCloseTab(rec.tab.id, rec.origin);
       if (st === 'closed' || st === 'gone') {
         log('DEBUG', 'W2', `tab ${rec.tab.id} closed (${st})`, {
@@ -1399,8 +1440,11 @@ export async function collectSiteData(progress, opts = {}) {
         scanWindowId = null;
       }
     }
+    // Create BLANK first: the subresource-blocking rule must be awaited
+    // BEFORE any navigation, otherwise subresources slip through before the
+    // rule lands (updateSessionRules is async).
     const createProps = {
-      url: scanUrlFor(rec.origin),
+      url: 'about:blank',
       active: false,
       ...(scanWindowId !== null ? { windowId: scanWindowId } : {}),
     };
@@ -1419,13 +1463,23 @@ export async function collectSiteData(progress, opts = {}) {
       );
       scanWindowId = null;
       tab = await chrome.tabs.create({
-        url: scanUrlFor(rec.origin),
+        url: 'about:blank',
         active: false,
       });
     }
     rec.tab = tab;
     ownership.own(tab.id, tab.active); // register IMMEDIATELY after successful create
     void persistOwnedIds();
+    rec.blockRuleId = await applyScanBlocking(tab.id);
+    if (rec.blockRuleId === null)
+      note(
+        `sitedata: resource blocking unavailable for tab ${tab.id} (declarativeNetRequest missing) — scanning unblocked`,
+        'WARN',
+        'W1',
+        { url: rec.origin, corr: rec.origin, tabId: tab.id }
+      );
+    // Navigation starts only after the blocking rule is in place.
+    await chrome.tabs.update(tab.id, { url: scanUrlFor(rec.origin) });
     log('INFO', 'W1', `tab ${tab.id} created`, {
       url: rec.origin,
       corr: rec.origin,
@@ -1527,6 +1581,7 @@ export async function collectSiteData(progress, opts = {}) {
       errorGrouped: false,
       finished: false,
       owned: true,
+      blockRuleId: null, // DNR subresource-blocking rule; cleared in finishScanTab
     };
     let handedOff = false;
     try {
@@ -1882,7 +1937,7 @@ export async function collectSiteData(progress, opts = {}) {
       notes,
       urlStates: urlStateList(),
       crawlId,
-      excludedCategories, // site-data sub-categories not captured (not reliably restorable)
+      excludedCategories, // site-data sub-categories not captured
     };
   }
 
@@ -1964,6 +2019,11 @@ export async function collectSiteData(progress, opts = {}) {
       await storageSaver.write(); // best-effort: keeps the checkpoint for resume
     else await clearCheckpoint();
     await logger.flush(); // persist any remaining log entries
+    try {
+      await clearAllScanBlocking();
+    } catch (e) {
+      /* best-effort */
+    }
     ownership.dispose();
   }
 
