@@ -194,6 +194,25 @@ export type AppState = {
       error: string | null;
       refs: RemoteRef[];
     } | null;
+    repoList: {
+      loading: boolean;
+      error: string | null;
+      repos: Array<{
+        owner: string;
+        name: string;
+        fullName: string;
+        private: boolean;
+        defaultBranch: string;
+      }>;
+      manual: boolean;
+    } | null;
+    branchList: {
+      loading: boolean;
+      error: string | null;
+      branches: string[];
+      manual: boolean;
+    } | null;
+    tokenValid: { account: string } | null;
     settingsImportKey: number;
   };
   caps: {
@@ -259,6 +278,9 @@ const initialState: AppState = {
     schedState: '',
     settingsStatus: '',
     remoteList: null,
+    repoList: null,
+    branchList: null,
+    tokenValid: null,
     settingsImportKey: 0,
   },
   caps: { visible: false, status: '', rows: [], probes: '…' },

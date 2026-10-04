@@ -20,6 +20,7 @@ import {
 } from '@/lib/cloud';
 import { CLOUD_RETRY_MAX_ATTEMPTS } from '@/lib/scheduler';
 import { GitHubStorageProvider } from '@/lib/github';
+import { tokenChangedTransition } from '@/lib/cloud-picker';
 import { LocalStorageProvider } from '@/lib/providers';
 import { buildSettingsExport, parseSettingsImport } from '@/lib/settings';
 import {
@@ -179,47 +180,229 @@ async function refreshCloudUI() {
 
 // ---------------- connect ----------------
 
+// Repository validation extracted from onCloudConnect(): provider creation +
+// connect() + repoInfo patch + default branch fill + encryption policy for
+// public repos + appendLog. String texts are kept identical.
+async function runRepoCheck(cfg) {
+  const provider = new GitHubStorageProvider({
+    token: cfg.github.token,
+    owner: cfg.github.owner,
+    repo: cfg.github.repo,
+    branch: cfg.github.branch || null,
+    basePath: cfg.github.basePath,
+  });
+  const info = await provider.connect();
+  patchState('cloud', (c) => ({
+    ...c,
+    repoInfo: {
+      account: info.account ? info.account.login : '?',
+      fullName: info.repo.fullName,
+      isPublic: !info.repo.private,
+      branch: info.branch,
+    },
+  }));
+  if (!cfg.github.branch) {
+    updateForm({ branch: info.branch });
+    await saveCloudConfig(cloudConfigFromForm());
+  }
+  if (!info.repo.private) {
+    // policy shown in the UI — the real enforcement lives in the storage layer
+    updateForm({ encryption: 'enabled' });
+  }
+  appendLog(
+    `cloud: connected to ${info.repo.fullName} (${info.repo.private ? 'private' : 'public'})`
+  );
+}
+
 export async function onCloudConnect() {
-  patchState('cloud', (c) => ({ ...c, repoInfo: null, repoInfoError: null }));
+  patchState('cloud', (c) => ({
+    ...c,
+    tokenValid: null,
+    repoInfo: null,
+    repoInfoError: null,
+    branchList: null,
+  }));
   try {
     const cfg = cloudConfigFromForm();
     await saveCloudConfig(cfg);
     savedToken = cfg.github.token;
+    // Step 1: token validation only (GET /user). 401 → auth-failed.
+    // Repository verification is a separate explicit step
+    // (onCloudCheckRepository) once a repo+branch is chosen.
     const provider = new GitHubStorageProvider({
       token: cfg.github.token,
-      owner: cfg.github.owner,
-      repo: cfg.github.repo,
-      branch: cfg.github.branch || null,
-      basePath: cfg.github.basePath,
     });
-    const info = await provider.connect();
+    const account = await provider.validateToken();
+    const repos = await provider.listRepositories();
     patchState('cloud', (c) => ({
       ...c,
-      repoInfo: {
-        account: info.account ? info.account.login : '?',
-        fullName: info.repo.fullName,
-        isPublic: !info.repo.private,
-        branch: info.branch,
-      },
+      tokenValid: account ? { account: account.login } : null,
+      repoList: { loading: false, error: null, repos, manual: false },
     }));
-    if (!cfg.github.branch) {
-      updateForm({ branch: info.branch });
-      await saveCloudConfig(cloudConfigFromForm());
-    }
-    if (!info.repo.private) {
-      // policy shown in the UI — the real enforcement lives in the storage layer
-      updateForm({ encryption: 'enabled' });
-    }
     appendLog(
-      `cloud: connected to ${info.repo.fullName} (${info.repo.private ? 'private' : 'public'})`
+      `cloud: token valid (as ${account ? account.login : '?'}) — found ${repos.length} repositories`
     );
   } catch (e: any) {
     const st = statusFromError(e) || 'upload-failed';
+    const message = CLOUD_STATUS_TEXT[st] || errMessage(e);
     patchState('cloud', (c) => ({
       ...c,
-      repoInfoError: CLOUD_STATUS_TEXT[st] || errMessage(e),
+      tokenValid: null,
+      repoInfoError: message,
+      repoList: { loading: false, error: message, repos: [], manual: true },
     }));
     appendLog(`cloud connect failed: [${errCode(e)}] ${errMessage(e)}`);
+  }
+}
+
+// Step 2: verify write access to the selected repository. The backup itself
+// re-validates via provider.connect() in cloud.js, so this is a pre-flight
+// check — it cannot loosen the validation the backup already enforces.
+export async function onCloudCheckRepository() {
+  const cfg = cloudConfigFromForm();
+  if (!cfg.github.owner || !cfg.github.repo) return;
+  patchState('cloud', (c) => ({ ...c, repoInfo: null, repoInfoError: null }));
+  try {
+    await saveCloudConfig(cfg);
+    await runRepoCheck(cfg);
+  } catch (e: any) {
+    const st = statusFromError(e) || 'upload-failed';
+    const message = CLOUD_STATUS_TEXT[st] || errMessage(e);
+    patchState('cloud', (c) => ({ ...c, repoInfoError: message }));
+    appendLog(
+      `cloud repository check failed: [${errCode(e)}] ${errMessage(e)}`
+    );
+  }
+}
+
+// ---------------- repository / branch picker ----------------
+
+// Called on every token field edit: selections made under the previous token
+// are stale and must not survive — not the dropdown lists, and not the
+// owner/repo/branch values sitting in form state (they would otherwise be
+// submitted against the new token without re-validation).
+export function onCloudTokenChanged(value: string) {
+  const t = tokenChangedTransition();
+  updateForm({ token: value, ...t.form });
+  patchState('cloud', (c) => ({ ...c, ...t.cloud }));
+}
+
+export function onCloudEnterManualRepo() {
+  patchState('cloud', (c) => ({
+    ...c,
+    repoList: c.repoList ? { ...c.repoList, manual: true } : null,
+  }));
+}
+
+export async function onCloudLoadRepositories() {
+  patchState('cloud', (c) => ({
+    ...c,
+    repoList: { loading: true, error: null, repos: [], manual: false },
+  }));
+  try {
+    const token = getState().cloud.form.token || savedToken || '';
+    const repos = await new GitHubStorageProvider({
+      token,
+    }).listRepositories();
+    patchState('cloud', (c) => ({
+      ...c,
+      repoList: { loading: false, error: null, repos, manual: false },
+    }));
+    appendLog(`cloud: found ${repos.length} repositories for this token`);
+  } catch (e: any) {
+    patchState('cloud', (c) => ({
+      ...c,
+      repoList: {
+        loading: false,
+        error: errMessage(e),
+        repos: [],
+        manual: true, // fall back to manual owner/repo entry
+      },
+    }));
+    appendLog(`cloud repository list failed: [${errCode(e)}] ${errMessage(e)}`);
+  }
+}
+
+export async function onCloudRepoSelected(fullName: string) {
+  const repos = getState().cloud.repoList?.repos || [];
+  const repo = repos.find((r) => r.fullName === fullName);
+  if (!repo) return;
+  try {
+    updateForm({ owner: repo.owner, repo: repo.name, branch: '' });
+    const cfg = cloudConfigFromForm();
+    await saveCloudConfig(cfg);
+    patchState('cloud', (c) => ({
+      ...c,
+      branchList: { loading: true, error: null, branches: [], manual: false },
+    }));
+    const branches = await new GitHubStorageProvider({
+      token: cfg.github.token,
+      owner: repo.owner,
+      repo: repo.name,
+    }).listBranches();
+    const branch = branches.includes(repo.defaultBranch)
+      ? repo.defaultBranch
+      : branches[0] || '';
+    updateForm({ branch });
+    await saveCloudConfig(cloudConfigFromForm());
+    patchState('cloud', (c) => ({
+      ...c,
+      branchList: { loading: false, error: null, branches, manual: false },
+    }));
+    await runRepoCheck(cloudConfigFromForm()); // keep validation running so the repo info panel shows
+  } catch (e: any) {
+    patchState('cloud', (c) => ({
+      ...c,
+      branchList: {
+        loading: false,
+        error: errMessage(e),
+        branches: [],
+        manual: true, // fall back to manual branch entry
+      },
+    }));
+    appendLog(`cloud branch list failed: [${errCode(e)}] ${errMessage(e)}`);
+  }
+}
+
+// Retry a failed branch fetch for the currently entered owner/repo.
+export async function onCloudReloadBranches() {
+  const form = getState().cloud.form;
+  if (!form.owner || !form.repo) return;
+  patchState('cloud', (c) => ({
+    ...c,
+    branchList: { loading: true, error: null, branches: [], manual: false },
+  }));
+  try {
+    const token = form.token || savedToken || '';
+    const branches = await new GitHubStorageProvider({
+      token,
+      owner: form.owner,
+      repo: form.repo,
+    }).listBranches();
+    const known = (getState().cloud.repoList?.repos || []).find(
+      (r) => r.fullName === `${form.owner}/${form.repo}`
+    );
+    const branch =
+      (known && branches.includes(known.defaultBranch)
+        ? known.defaultBranch
+        : branches[0]) || form.branch;
+    updateForm({ branch });
+    await saveCloudConfig(cloudConfigFromForm());
+    patchState('cloud', (c) => ({
+      ...c,
+      branchList: { loading: false, error: null, branches, manual: false },
+    }));
+  } catch (e: any) {
+    patchState('cloud', (c) => ({
+      ...c,
+      branchList: {
+        loading: false,
+        error: errMessage(e),
+        branches: [],
+        manual: true, // fall back to manual branch entry
+      },
+    }));
+    appendLog(`cloud branch list failed: [${errCode(e)}] ${errMessage(e)}`);
   }
 }
 

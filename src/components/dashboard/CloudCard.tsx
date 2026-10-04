@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
+import { RepoCombobox } from '@/components/dashboard/RepoCombobox';
 import {
   Table,
   TableBody,
@@ -32,9 +33,16 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { useApp, updateForm } from '@/dashboard/store';
+import { useApp, updateForm, patchState } from '@/dashboard/store';
+import { branchPickerMode, isEmptyRepoList } from '@/lib/cloud-picker';
 import {
   onCloudConnect,
+  onCloudCheckRepository,
+  onCloudTokenChanged,
+  onCloudEnterManualRepo,
+  onCloudLoadRepositories,
+  onCloudRepoSelected,
+  onCloudReloadBranches,
   onCloudBackupNow,
   onCloudRestore,
   onCloudRestorePick,
@@ -74,6 +82,12 @@ export function CloudCard() {
   const isPublic = cloud.repoInfo?.isPublic === true;
   const remoteReady = form.provider === 'github';
   const weekly = form.frequency === 'weekly';
+  const branchMode = branchPickerMode({
+    branchList: cloud.branchList,
+    repoSelected: !!(form.owner && form.repo),
+    repoManual: cloud.repoList?.manual === true,
+  });
+  const repoChosen = !!(form.owner && form.repo);
 
   return (
     <Card id="section-cloud">
@@ -128,39 +142,181 @@ export function CloudCard() {
                 autoComplete="off"
                 placeholder="saved — type a new one to replace it"
                 value={form.token}
-                onChange={(e) => updateForm({ token: e.target.value })}
+                onChange={(e) => onCloudTokenChanged(e.target.value)}
               />
             </Label>
-            <Label htmlFor="gh-owner">
-              Owner
-              <Input
-                id="gh-owner"
-                type="text"
-                placeholder="your-github-user"
-                value={form.owner}
-                onChange={(e) => updateForm({ owner: e.target.value })}
-              />
-            </Label>
-            <Label htmlFor="gh-repo">
-              Repository
-              <Input
-                id="gh-repo"
-                type="text"
-                placeholder="browser-backups"
-                value={form.repo}
-                onChange={(e) => updateForm({ repo: e.target.value })}
-              />
-            </Label>
-            <Label htmlFor="gh-branch">
-              Branch
-              <Input
-                id="gh-branch"
-                type="text"
-                placeholder="repository default branch (e.g. main)"
-                value={form.branch}
-                onChange={(e) => updateForm({ branch: e.target.value })}
-              />
-            </Label>
+            <p className="text-muted-foreground text-xs">
+              Token scopes — fine-grained token: grant{' '}
+              <b>Contents: Read and write</b> on your backup repo(s); classic
+              token: <b>repo</b> scope (<b>public_repo</b> if you only use
+              public repos). Changing the token clears the repository and branch
+              selection below.
+            </p>
+            {cloud.repoList && !cloud.repoList.manual ? (
+              <>
+                <div className="grid gap-1.5">
+                  <span className="text-sm font-medium">Repository</span>
+                  <RepoCombobox
+                    id="gh-repo-select"
+                    repos={cloud.repoList.repos}
+                    value={
+                      form.owner && form.repo
+                        ? `${form.owner}/${form.repo}`
+                        : ''
+                    }
+                    onChange={(v) => void onCloudRepoSelected(v)}
+                    loading={cloud.repoList.loading}
+                  />
+                </div>
+                <div>
+                  <Button
+                    id="gh-repo-manual"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onCloudEnterManualRepo()}
+                  >
+                    Enter manually
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <Label htmlFor="gh-owner">
+                  Owner
+                  <Input
+                    id="gh-owner"
+                    type="text"
+                    placeholder="your-github-user"
+                    value={form.owner}
+                    onChange={(e) => updateForm({ owner: e.target.value })}
+                  />
+                </Label>
+                <Label htmlFor="gh-repo">
+                  Repository
+                  <Input
+                    id="gh-repo"
+                    type="text"
+                    placeholder="browser-backups"
+                    value={form.repo}
+                    onChange={(e) => updateForm({ repo: e.target.value })}
+                  />
+                </Label>
+                {cloud.repoList?.manual && cloud.repoList.repos.length > 0 && (
+                  <div>
+                    <Button
+                      id="gh-repo-use-list"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        patchState('cloud', (c) => ({
+                          ...c,
+                          repoList: c.repoList
+                            ? { ...c.repoList, manual: false }
+                            : null,
+                        }))
+                      }
+                    >
+                      Use repository list
+                    </Button>
+                  </div>
+                )}
+              </>
+            )}
+            {cloud.repoList?.error && (
+              <div className="text-destructive flex flex-wrap items-center gap-2 text-sm">
+                <span>{cloud.repoList.error}</span>
+                <Button
+                  id="gh-repo-retry"
+                  variant="link"
+                  size="sm"
+                  onClick={() => void onCloudLoadRepositories()}
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
+            {cloud.repoList &&
+              !cloud.repoList.loading &&
+              !cloud.repoList.error &&
+              !cloud.repoList.manual &&
+              isEmptyRepoList(cloud.repoList.repos) && (
+                <div
+                  id="gh-repo-fine-grained-hint"
+                  className="text-muted-foreground grid gap-2 text-sm"
+                >
+                  <span>
+                    No repositories were listed for this token. If you are using
+                    a <b>fine-grained</b> personal access token, GitHub may not
+                    list its repositories here even though backup uploads would
+                    work — this is a token limitation, not a bug. Enter the
+                    owner and repository manually instead.
+                  </span>
+                  <div>
+                    <Button
+                      id="gh-repo-manual-hint"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onCloudEnterManualRepo()}
+                    >
+                      Enter manually
+                    </Button>
+                  </div>
+                </div>
+              )}
+            {branchMode === 'manual' ? (
+              <Label htmlFor="gh-branch">
+                Branch
+                <Input
+                  id="gh-branch"
+                  type="text"
+                  placeholder="repository default branch (e.g. main)"
+                  value={form.branch}
+                  onChange={(e) => updateForm({ branch: e.target.value })}
+                />
+              </Label>
+            ) : (
+              <Label htmlFor="gh-branch-select">
+                Branch
+                <Select
+                  value={form.branch}
+                  onValueChange={(v) => updateForm({ branch: v })}
+                  disabled={branchMode !== 'ready'}
+                >
+                  <SelectTrigger
+                    id="gh-branch-select"
+                    className="w-full max-w-sm"
+                  >
+                    <SelectValue
+                      placeholder={
+                        branchMode === 'loading'
+                          ? 'Loading branches…'
+                          : 'Choose a repository first'
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(cloud.branchList?.branches || []).map((b) => (
+                      <SelectItem key={b} value={b}>
+                        {b}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Label>
+            )}
+            {cloud.branchList?.error && (
+              <div className="text-destructive flex flex-wrap items-center gap-2 text-sm">
+                <span>{cloud.branchList.error}</span>
+                <Button
+                  id="gh-branch-retry"
+                  variant="link"
+                  size="sm"
+                  onClick={() => void onCloudReloadBranches()}
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
             <Label htmlFor="gh-path">
               Backup path
               <Input
@@ -170,25 +326,40 @@ export function CloudCard() {
                 onChange={(e) => updateForm({ basePath: e.target.value })}
               />
             </Label>
-            <div>
+            <div className="flex flex-wrap gap-2">
               <Button
                 id="cloud-connect"
                 variant="outline"
+                disabled={!form.token}
                 onClick={() => void onCloudConnect()}
               >
-                Connect &amp; check repository
+                Connect
+              </Button>
+              <Button
+                id="cloud-check-repo"
+                variant="outline"
+                disabled={!repoChosen}
+                onClick={() => void onCloudCheckRepository()}
+              >
+                Check repository
               </Button>
             </div>
             <div id="cloud-repo-info" className="text-muted-foreground text-sm">
               {cloud.repoInfoError && (
                 <span className="text-destructive">{cloud.repoInfoError}</span>
               )}
+              {cloud.tokenValid && (
+                <span>
+                  Connected as <b>{cloud.tokenValid.account}</b>.
+                </span>
+              )}
               {cloud.repoInfo && (
                 <span>
-                  Connected as <b>{cloud.repoInfo.account}</b> — repository{' '}
-                  <b>{cloud.repoInfo.fullName}</b> is{' '}
+                  {' '}
+                  Repository <b>{cloud.repoInfo.fullName}</b> is{' '}
                   <b>{cloud.repoInfo.isPublic ? 'PUBLIC' : 'private'}</b>,
-                  default branch <b>{cloud.repoInfo.branch}</b>.
+                  default branch <b>{cloud.repoInfo.branch}</b> — ready for
+                  backup.
                 </span>
               )}
             </div>

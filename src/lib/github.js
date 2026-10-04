@@ -48,15 +48,12 @@ export class GitHubStorageProvider extends StorageProvider {
         'A GitHub personal access token is required.'
       );
     }
-    if (!cfg.owner || !cfg.repo) {
-      throw new TypedError(
-        'ERR_NOT_CONFIGURED',
-        'Repository owner and name are required.'
-      );
-    }
     this.token = cfg.token;
-    this.owner = cfg.owner;
-    this.repo = cfg.repo;
+    // owner/repo are optional here so the provider can be used for
+    // repository discovery (listRepositories). Repository-scoped operations
+    // fail with ERR_NOT_CONFIGURED via #requireRepo() instead.
+    this.owner = cfg.owner || null;
+    this.repo = cfg.repo || null;
     this.branch = cfg.branch || null; // null = repo default branch (resolved on connect)
     this.basePath = (cfg.basePath || 'browser-backups').replace(
       /^\/+|\/+$/g,
@@ -87,7 +84,20 @@ export class GitHubStorageProvider extends StorageProvider {
   }
 
   async #request(method, path, { body, raw = false, ref } = {}) {
-    const url = new URL(`${this.apiBase}${path}`);
+    let url;
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      // Absolute URL (pagination `next` links): only ever follow URLs on the
+      // configured API origin, so the Bearer token never leaves api.github.com.
+      url = new URL(path);
+      if (url.origin !== new URL(this.apiBase).origin) {
+        throw new TypedError(
+          'ERR_GITHUB_HTTP',
+          'GitHub request rejected: pagination URL points to an unexpected host.'
+        );
+      }
+    } else {
+      url = new URL(`${this.apiBase}${path}`);
+    }
     if (ref) url.searchParams.set('ref', ref);
     let res;
     try {
@@ -106,7 +116,12 @@ export class GitHubStorageProvider extends StorageProvider {
     }
     if (res.ok) {
       if (raw)
-        return { status: res.status, text: await res.text(), json: null };
+        return {
+          status: res.status,
+          text: await res.text(),
+          json: null,
+          headers: res.headers,
+        };
       const text = await res.text();
       let json;
       try {
@@ -114,7 +129,7 @@ export class GitHubStorageProvider extends StorageProvider {
       } catch (e) {
         json = null;
       }
-      return { status: res.status, text, json };
+      return { status: res.status, text, json, headers: res.headers };
     }
     // error path — build a typed error with a SAFE message
     let msg = '';
@@ -154,13 +169,56 @@ export class GitHubStorageProvider extends StorageProvider {
     );
   }
 
+  #requireRepo() {
+    if (!this.owner || !this.repo) {
+      throw new TypedError(
+        'ERR_NOT_CONFIGURED',
+        'Repository owner and name are required.'
+      );
+    }
+  }
+
   #path(...parts) {
+    this.#requireRepo(); // chokepoint of all content operations
     return `/repos/${[this.owner, this.repo, 'contents', ...parts.filter((p) => p !== undefined && p !== null)].join('/')}`;
+  }
+
+  // Parse an RFC 5988 Link header; return the URL of rel="next", or null.
+  #nextLinkUrl(linkHeader) {
+    if (!linkHeader) return null;
+    for (const part of String(linkHeader).split(',')) {
+      const m = part.match(/<([^>]+)>\s*;\s*rel="next"/);
+      if (m) return m[1];
+    }
+    return null;
+  }
+
+  // Fetch a paginated collection, following RFC 5988 rel="next" links.
+  // Accumulates array bodies; stops at the first page without a next link
+  // or when maxPages is reached.
+  async #getAllPages(path, { maxPages = 10 } = {}) {
+    const items = [];
+    let next = path;
+    for (let page = 0; next && page < maxPages; page++) {
+      const r = await this.#request('GET', next);
+      if (Array.isArray(r.json)) items.push(...r.json);
+      next = this.#nextLinkUrl(r.headers.get('link'));
+    }
+    return items;
   }
 
   // ---------- contract ----------
 
+  // Lightweight token validation: GET /user only, no repository required.
+  // Used by the "Connect" step before any repository is selected.
+  async validateToken() {
+    const me = await this.#request('GET', '/user');
+    this.account = me.json && me.json.login ? { login: me.json.login } : null;
+    return this.account;
+  }
+
   async connect() {
+    this.#requireRepo();
     const me = await this.#request('GET', '/user');
     this.account = me.json && me.json.login ? { login: me.json.login } : null;
     const info = await this.#request(
@@ -206,6 +264,36 @@ export class GitHubStorageProvider extends StorageProvider {
   }
   backupsDir() {
     return `${this.basePath}/backups`;
+  }
+
+  // ---------- repository/branch picker (no owner/repo required) ----------
+
+  // Repositories the token can see, newest first (API already sorts).
+  async listRepositories() {
+    const repos = await this.#getAllPages(
+      '/user/repos?per_page=100&sort=updated&direction=desc'
+    );
+    return repos
+      .filter((r) => r && r.owner && r.owner.login && r.name && r.full_name)
+      .map((r) => ({
+        owner: r.owner.login,
+        name: r.name,
+        fullName: r.full_name,
+        private: !!r.private,
+        defaultBranch: r.default_branch || 'main',
+        updatedAt: r.updated_at || null,
+      }));
+  }
+
+  // Branch names of the configured repository.
+  async listBranches() {
+    this.#requireRepo();
+    const branches = await this.#getAllPages(
+      `/repos/${this.owner}/${this.repo}/branches?per_page=100`
+    );
+    return branches
+      .filter((b) => b && typeof b.name === 'string')
+      .map((b) => b.name);
   }
 
   async #getRemoteManifest() {
