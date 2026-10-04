@@ -9,6 +9,7 @@
 // the engine reports that instead of pretending.
 
 import { yieldToUI, TypedError } from './util.js';
+import { CATEGORY_GROUP_MEMBERS } from './collect.js';
 import {
   restoreSiteData as restoreSiteDataImpl,
   createTabOwnership,
@@ -219,7 +220,38 @@ async function restoreBookmarks(data, opts, progress) {
 
 const VALID_STATES = ['normal', 'minimized', 'maximized', 'fullscreen'];
 
-// eslint-disable-next-line complexity -- TECH DEBT: complexity 37, refactoring risks behavior change
+// Granular tabsWindows (Batch 2): the "tabs"-without-"windows" selection stores
+// tabs as a flat list carrying their old windowId (no window layout). Group
+// them into one synthetic window entry per old windowId so the restore loop
+// below stays single-pathed. Legacy nested backups (no top-level tabs[]) and
+// layout-only windows pass through unchanged.
+function expandFlatTabsWindows(data) {
+  const windows = (data && data.windows) || [];
+  const flatTabs = data && Array.isArray(data.tabs) ? data.tabs : [];
+  if (flatTabs.length === 0) return windows;
+  const byWindowId = new Map();
+  for (const t of flatTabs) {
+    const key =
+      t && t.windowId !== undefined && t.windowId !== null
+        ? String(t.windowId)
+        : '';
+    if (!byWindowId.has(key)) byWindowId.set(key, []);
+    byWindowId.get(key).push(t);
+  }
+  return windows.concat([...byWindowId.values()].map((tabs) => ({ tabs })));
+}
+
+// Notes the skipped grouping when a backup carries tab-group metadata but no
+// tabs at all (granular "tabGroups"-only selection).
+function noteSkippedTabGroups(data, totalTabs, notes) {
+  if ((data.tabGroups || []).length > 0 && totalTabs === 0) {
+    notes.push(
+      'Tab groups skipped: the backup contains tab-group metadata but no tabs to group.'
+    );
+  }
+}
+
+// eslint-disable-next-line complexity -- TECH DEBT: complexity 40, refactoring risks behavior change
 export async function restoreTabsWindows(data, opts, progress) {
   const stats = {
     windowsCreated: 0,
@@ -236,7 +268,7 @@ export async function restoreTabsWindows(data, opts, progress) {
     (data.tabGroups || []).map((g) => [String(g.groupId), g])
   );
 
-  const windows = data.windows || [];
+  const windows = expandFlatTabsWindows(data);
   const totalTabs = windows.reduce(
     (n, w) => n + ((w && w.tabs && w.tabs.length) || 0),
     0
@@ -248,6 +280,7 @@ export async function restoreTabsWindows(data, opts, progress) {
         'this looks like a malicious or corrupted backup file.'
     );
   }
+  noteSkippedTabGroups(data, totalTabs, stats.notes);
   let androidWindow = null;
   let androidBaseIndex = 0;
   try {
@@ -880,6 +913,142 @@ async function restoreSiteData(data, opts, progress) {
   };
 }
 
+// ---------- granular restore pre-filter ----------
+
+// The dashboard restore UI splits four sections into granular rows (the
+// worker UI contract): tabsWindows -> tabs/windows/tabGroups,
+// cookies -> cookies_plain/cookies_partitioned,
+// sessions -> sessions_tabs/sessions_windows,
+// siteData -> siteData_localStorage/siteData_indexedDB/siteData_otherStorage.
+// The UI synthesizes options[section] =
+//   { enabled, unavailable, granular: { [memberId]: bool }, ... }
+// where `granular` maps member id -> enabled. This pure function narrows the
+// backed-up section data to what the user selected BEFORE the restore
+// function runs, so every guard inside (MAX_RESTORE_TABS, the http(s) URL
+// allowlist, …) keeps working on the narrowed data unchanged.
+export function filterSectionDataForRestore(cat, sectionData, granular) {
+  if (
+    granular === null ||
+    granular === undefined ||
+    typeof granular !== 'object' ||
+    typeof sectionData !== 'object' ||
+    sectionData === null
+  ) {
+    return sectionData;
+  }
+  const members = CATEGORY_GROUP_MEMBERS[cat] || [];
+  // No-op: undivided sections, or every member selected, return the input
+  // AS IS (identical reference). This is the equivalence guarantee: an
+  // all-on restore sees exactly the same input as a filter-less restore.
+  if (members.length === 0 || members.every((m) => granular[m])) {
+    return sectionData;
+  }
+  switch (cat) {
+    case 'tabsWindows':
+      return filterTabsWindowsSection(sectionData, granular);
+    case 'cookies':
+      return filterCookiesSection(sectionData, granular);
+    case 'sessions':
+      return filterSessionsSection(sectionData, granular);
+    case 'siteData':
+      return filterSiteDataSection(sectionData, granular);
+    default:
+      return sectionData;
+  }
+}
+
+function filterTabsWindowsSection(sectionData, granular) {
+  const keepTabs = !!granular.tabs;
+  const keepWindows = !!granular.windows;
+  const keepGroups = !!granular.tabGroups;
+  let windows = sectionData.windows || [];
+  let flatTabs = Array.isArray(sectionData.tabs) ? sectionData.tabs : null;
+  if (!keepTabs) {
+    windows = windows.map((w) => ({ ...w, tabs: [] }));
+    flatTabs = null;
+  }
+  if (!keepWindows) {
+    // Tabs-only selection: flatten the nested tabs into a flat list
+    // carrying their old windowId, mirroring collect's flat-tabs output, so
+    // expandFlatTabsWindows regroups them into fresh windows on restore.
+    const flat = [];
+    windows.forEach((w, wi) => {
+      const wid = w && w.id !== undefined && w.id !== null ? w.id : wi;
+      for (const t of (w && w.tabs) || []) flat.push({ ...t, windowId: wid });
+    });
+    if (flatTabs) flat.push(...flatTabs);
+    windows = [];
+    flatTabs = flat;
+  }
+  const out = {
+    ...sectionData,
+    windows,
+    tabGroups: keepGroups ? sectionData.tabGroups : [],
+  };
+  if (flatTabs) out.tabs = flatTabs;
+  else delete out.tabs;
+  if (!keepGroups && (sectionData.tabGroups || []).length > 0) {
+    const notes = Array.isArray(sectionData.notes) ? sectionData.notes : [];
+    out.notes = [
+      ...notes,
+      'Tab groups deselected by the user; grouping skipped.',
+    ];
+  }
+  return out;
+}
+
+function filterCookiesSection(sectionData, granular) {
+  const keepPlain = !!granular.cookies_plain;
+  const keepPartitioned = !!granular.cookies_partitioned;
+  return {
+    ...sectionData,
+    cookies: (sectionData.cookies || []).filter((c) =>
+      c && c.partitionKey !== undefined ? keepPartitioned : keepPlain
+    ),
+  };
+}
+
+function keepSessionItem(item, keepTabs, keepWindows) {
+  return !((item.tab && !keepTabs) || (item.window && !keepWindows));
+}
+
+function filterSessionsSection(sectionData, granular) {
+  const keepTabs = !!granular.sessions_tabs;
+  const keepWindows = !!granular.sessions_windows;
+  const keep = (it) => keepSessionItem(it, keepTabs, keepWindows);
+  const out = {
+    ...sectionData,
+    recentlyClosed: (sectionData.recentlyClosed || []).filter(keep),
+  };
+  if (Array.isArray(sectionData.devices)) {
+    out.devices = sectionData.devices.map((d) => ({
+      ...d,
+      sessions: (d.sessions || []).filter(keep),
+    }));
+  }
+  return out;
+}
+
+function filterSiteDataSection(sectionData, granular) {
+  const keepLS = !!granular.siteData_localStorage;
+  const keepIDB = !!granular.siteData_indexedDB;
+  const keepOther = !!granular.siteData_otherStorage;
+  const origins = {};
+  for (const [origin, snap] of Object.entries(sectionData.origins || {})) {
+    const s = { ...snap };
+    if (!keepLS) delete s.localStorage;
+    if (!keepIDB) delete s.indexedDB;
+    if (!keepOther) {
+      delete s.cacheStorage;
+      delete s.opfs;
+      delete s.buckets;
+    }
+    // sessionStorage / serviceWorkers are separate options — never touched.
+    origins[origin] = s;
+  }
+  return { ...sectionData, origins };
+}
+
 // ---------- orchestrator ----------
 
 const RESTORE_PLAN = [
@@ -1038,8 +1207,14 @@ export async function restoreAll(backup, options, progress) {
     }
     if (progress) progress(`restoring: ${cat}`, cat, 'running');
     try {
+      const sectionInput = data[cat];
+      const filtered = filterSectionDataForRestore(
+        cat,
+        sectionInput,
+        opts.granular
+      );
       const result = await fn(
-        data[cat],
+        filtered,
         opts,
         (msg) => progress && progress(msg, cat, 'running')
       );
@@ -1047,7 +1222,18 @@ export async function restoreAll(backup, options, progress) {
         results[cat] = { ...result, outcome: 'unavailable' };
       } else {
         const stats = result.stats || {};
-        const outcomeCounts = itemOutcomeCounts(cat, data[cat], stats);
+        // Surface notes the pre-filter added (e.g. tab-group deselection)
+        // so the user sees why items were skipped. Reference comparison:
+        // the filter only replaces the notes array when it appends one.
+        if (
+          filtered !== sectionInput &&
+          filtered &&
+          filtered.notes !== sectionInput.notes &&
+          Array.isArray(filtered.notes)
+        ) {
+          stats.notes = [...filtered.notes, ...(stats.notes || [])];
+        }
+        const outcomeCounts = itemOutcomeCounts(cat, sectionInput, stats);
         results[cat] = {
           ...result,
           outcome: outcomeFor(outcomeCounts),

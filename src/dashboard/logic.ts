@@ -13,7 +13,15 @@ import {
 } from '@/lib/format';
 import { encryptBackup } from '@/lib/crypto';
 import { detect, runProbes, getChromeVersion } from '@/lib/capabilities';
-import { collectAll, computeCounts } from '@/lib/collect';
+import { collectAll, computeCounts, subCategorySelected } from '@/lib/collect';
+import {
+  sectionForRow,
+  capabilityKeyForRow,
+  presentRestoreRows,
+  countFromData,
+  countFor,
+  synthesizeSectionOptions,
+} from '@/lib/restore-rows';
 import { restoreAll } from '@/lib/restore';
 import { validateBackupFile } from '@/lib/validate';
 import {
@@ -45,6 +53,13 @@ import {
   writeSiteDataCache,
 } from '@/lib/site-incremental';
 import { SITE_DATA_CONFIG } from '@/lib/scan-config';
+import {
+  newSiteScanRunId,
+  shouldPersistSiteScan,
+  buildSiteScanRecord,
+  writeSiteScanRecord,
+  clearSiteScanRecord,
+} from '@/lib/site-scan-persist';
 import { pushSiteLogEntry, type SiteLogEntry } from './site-log-store';
 
 type UnknownRecord = Record<string, unknown>;
@@ -74,6 +89,12 @@ type SiteDataOptions = UnknownRecord & {
   retryMaxAttempts?: number | undefined;
   readTimeoutMs?: number | undefined;
   checkpointEveryOrigins?: number | undefined;
+  includeSessionStorage?: boolean;
+  includeServiceWorkers?: boolean;
+  includeLocalStorage?: boolean;
+  includeIndexedDB?: boolean;
+  includeOtherStorage?: boolean;
+  excludedSiteDataCategories?: string[];
   tuning?: {
     retryMaxAttempts?: number | undefined;
     readTimeoutMs?: number | undefined;
@@ -108,6 +129,9 @@ type ValidationResult = {
 type RestoreOption = {
   enabled: boolean;
   unavailable?: boolean;
+  // Split-section synthesis only: per-member enabled flags (see
+  // synthesizeSectionOptions in @/lib/restore-rows).
+  granular?: Record<string, boolean>;
   mode?: 'merge' | 'replace' | 'redownload' | 'metadata-only';
   confirmDestructive?: boolean;
   allowLiveTabWrite?: boolean;
@@ -196,6 +220,14 @@ export function fileName(ext = 'json') {
 
 // ---------------- backup pipeline ----------------
 
+// Batch 1 granular site-data categories: 'siteData' (legacy) or any
+// 'siteData_*' ID selects the site-data crawl.
+function siteDataCategorySelected(selectedCategories: string[]): boolean {
+  return selectedCategories.some(
+    (c) => c === 'siteData' || c.startsWith('siteData_')
+  );
+}
+
 // Stop flag for the running backup (dashboard Stop button). The site-data
 // crawl polls it and halts safely: owned scan tabs are closed via
 // safeCloseTab (safety net), partial results are kept.
@@ -207,6 +239,45 @@ export function requestBackupStop() {
 // Last site-data options + section, for the Failures page retry buttons.
 let lastSiteDataOpts: CollectOptions | null = null;
 let lastSiteDataSection: SiteDataSection | null = null;
+
+// Persistensi snapshot site-scan (key 'bbr:last-site-scan') agar halaman
+// Results/Failures tetap terisi setelah reload/tab baru. Run dibuat saat
+// backup mulai; retry-save memakai runId yang sama (jangan di-null-kan di
+// akhir buildBackupObject).
+let siteScanRun: { runId: string; startedAt: number } | null = null;
+let siteScanLastPersistMs = 0;
+
+async function persistSiteScanNow(final: boolean): Promise<void> {
+  const run = siteScanRun;
+  if (!run) return;
+  const now = Date.now();
+  const ok = await writeSiteScanRecord(
+    chrome.storage?.local ?? null,
+    buildSiteScanRecord({
+      runId: run.runId,
+      startedAt: run.startedAt,
+      completedAt: final ? now : null,
+      siteScan: getState().backup.siteScan,
+    })
+  );
+  if (!ok) return;
+  siteScanLastPersistMs = now;
+  if (final)
+    patchState('backup', (b) => ({
+      ...b,
+      siteScanMeta: {
+        runId: run.runId,
+        startedAt: run.startedAt,
+        completedAt: now,
+      },
+    }));
+}
+
+function maybePersistSiteScan(): void {
+  if (!siteScanRun) return;
+  if (!shouldPersistSiteScan(siteScanLastPersistMs, Date.now())) return;
+  void persistSiteScanNow(false);
+}
 
 export async function buildBackupObject(
   onProgress?: (m: string) => void,
@@ -226,6 +297,24 @@ export async function buildBackupObject(
   const tuning =
     collectOptions?.siteData?.tuning ?? (await loadSiteDataTuning());
   const siteDataInclude = await loadSiteDataInclude();
+  // Granular site-data storage categories (Batch 1): each defaults to
+  // included unless the category selection excludes both 'siteData' and its
+  // granular ID.
+  const includeSiteLocalStorage = subCategorySelected(
+    selectedCategories,
+    'siteData',
+    'siteData_localStorage'
+  );
+  const includeSiteIndexedDB = subCategorySelected(
+    selectedCategories,
+    'siteData',
+    'siteData_indexedDB'
+  );
+  const includeSiteOtherStorage = subCategorySelected(
+    selectedCategories,
+    'siteData',
+    'siteData_otherStorage'
+  );
   const effectiveCollectOptions = {
     ...(collectOptions || {}),
     selectedCategories,
@@ -242,9 +331,15 @@ export async function buildBackupObject(
         tuning.checkpointEveryOrigins,
       includeSessionStorage: siteDataInclude.sessionStorage,
       includeServiceWorkers: siteDataInclude.serviceWorkers,
+      includeLocalStorage: includeSiteLocalStorage,
+      includeIndexedDB: includeSiteIndexedDB,
+      includeOtherStorage: includeSiteOtherStorage,
       excludedSiteDataCategories: [
         ...(siteDataInclude.sessionStorage ? [] : ['sessionStorage']),
         ...(siteDataInclude.serviceWorkers ? [] : ['serviceWorkers']),
+        ...(includeSiteLocalStorage ? [] : ['localStorage']),
+        ...(includeSiteIndexedDB ? [] : ['indexedDB']),
+        ...(includeSiteOtherStorage ? [] : ['otherStorage']),
       ],
       stopFlag: backupStopFlag,
       onLogEntry: (entry: SiteLogEntry) => pushSiteLogEntry(entry),
@@ -266,7 +361,7 @@ export async function buildBackupObject(
   } | null = null;
   if (
     collectOptions?.incrementalSiteData === true &&
-    selectedCategories.includes('siteData')
+    siteDataCategorySelected(selectedCategories)
   ) {
     const rawList =
       includedOrigins ??
@@ -305,7 +400,24 @@ export async function buildBackupObject(
         (plan.fullCrawl ? ` (full crawl: ${plan.reason})` : '')
     );
   }
-  patchState('backup', (b) => ({ ...b, siteScan: null }));
+  const _runId = newSiteScanRunId();
+  const _startedAt = Date.now();
+  siteScanRun = { runId: _runId, startedAt: _startedAt };
+  siteScanLastPersistMs = _startedAt;
+  patchState('backup', (b) => ({
+    ...b,
+    siteScan: null,
+    siteScanMeta: { runId: _runId, startedAt: _startedAt, completedAt: null },
+  }));
+  void writeSiteScanRecord(
+    chrome.storage?.local ?? null,
+    buildSiteScanRecord({
+      runId: _runId,
+      startedAt: _startedAt,
+      completedAt: null,
+      siteScan: null,
+    })
+  );
   appendLog(`backup starting: categories=[${selectedCategories.join(', ')}]`);
   const result = (await collectAll(
     (
@@ -329,6 +441,7 @@ export async function buildBackupObject(
           ...b,
           siteScan: stats as SiteScanStats,
         }));
+        maybePersistSiteScan();
       }
     },
     effectiveCollectOptions
@@ -340,7 +453,7 @@ export async function buildBackupObject(
   // fresh). A manual full run refreshes the cache wholesale instead, so the
   // next scheduled run starts incremental from a fresh snapshot.
   const siteDataSection = data.siteData as SiteDataSection | undefined;
-  const siteDataWanted = selectedCategories.includes('siteData');
+  const siteDataWanted = siteDataCategorySelected(selectedCategories);
   if (
     categoryStatus.siteData?.ok === true &&
     siteDataWanted &&
@@ -415,6 +528,9 @@ export async function buildBackupObject(
   backup.counts = countRecord(computeCounts(clean));
   await finalizeIntegrity(backup);
   lastSiteDataSection = data.siteData || null;
+  // Snapshot final (completedAt terisi); siteScanRun sengaja TIDAK di-null-kan
+  // agar retry-save sesudahnya memakai runId yang sama.
+  await persistSiteScanNow(true);
   return { backup, categoryStatus };
 }
 
@@ -818,6 +934,7 @@ async function retrySiteDataUrlsUnlocked(urls: string[]): Promise<void> {
               siteScan: { ...stats, urlStates: [...byOrigin.values()] },
             };
           });
+          maybePersistSiteScan();
         }
         appendLog(`retry: ${msg}`);
       },
@@ -883,6 +1000,8 @@ async function retrySiteDataSaveUnlocked(): Promise<boolean> {
         ),
       },
     }));
+    // Koreksi save-failed -> saved ikut tersimpan ke snapshot.
+    void persistSiteScanNow(false);
     appendLog(
       'retry: checkpoint save succeeded — save-failed origins are now saved'
     );
@@ -952,14 +1071,23 @@ const CATEGORY_LABELS: Record<string, string> = {
   history: 'History',
   tabsWindows: 'Tabs & windows',
   tabGroups: 'Tab groups',
+  tabs: 'Tabs',
+  windows: 'Windows (layout & position)',
   sessions: 'Sessions (recently closed)',
+  sessions_tabs: 'Recently closed tabs',
+  sessions_windows: 'Recently closed windows',
   cookies: 'Cookies',
+  cookies_plain: 'Cookies (plain)',
+  cookies_partitioned: 'Cookies (partitioned)',
   downloads: 'Downloads',
   readingList: 'Reading list',
   extensionStorage: 'Extension storage (own)',
   installedExtensions: 'Installed extensions (metadata)',
   extensionPermissions: 'Extension permissions (own)',
   siteData: 'Website data (storage per origin)',
+  siteData_localStorage: 'Website data: Local Storage',
+  siteData_indexedDB: 'Website data: IndexedDB',
+  siteData_otherStorage: 'Website data: Cache, OPFS, Buckets',
   profile: 'Profile metadata',
 };
 
@@ -975,121 +1103,6 @@ const RESTORE_HANDLED_CATEGORIES = new Set([
   'installedExtensions',
   'siteData',
 ]);
-
-function countFromData(backup: BackupObject, cat: string): string | undefined {
-  const data = asRecord(backup.data);
-  const section = asRecord(data[cat]);
-  const length = (value: unknown) =>
-    Array.isArray(value) ? String(value.length) : undefined;
-  switch (cat) {
-    case 'bookmarks': {
-      if (!isRecord(section.roots)) return undefined;
-      const roots = asRecord(section.roots);
-      let count = 0;
-      const walk = (nodes: unknown) => {
-        if (!Array.isArray(nodes)) return;
-        for (const value of nodes) {
-          const node = asRecord(value);
-          if (node.type === 'folder') walk(node.children);
-          else count++;
-        }
-      };
-      for (const root of Object.values(roots)) walk(asRecord(root).children);
-      return String(count);
-    }
-    case 'history':
-      return length(section.items);
-    case 'tabsWindows': {
-      if (!Array.isArray(section.windows)) return undefined;
-      return String(
-        section.windows.reduce((count, value) => {
-          const tabs = asRecord(value).tabs;
-          return count + (Array.isArray(tabs) ? tabs.length : 0);
-        }, 0)
-      );
-    }
-    case 'tabGroups':
-      return length(asRecord(data.tabsWindows).tabGroups);
-    case 'sessions':
-      return length(section.recentlyClosed);
-    case 'cookies':
-      return length(section.cookies);
-    case 'downloads':
-    case 'installedExtensions':
-      return length(section.items);
-    case 'readingList':
-      return length(section.entries);
-    case 'extensionPermissions':
-      return Array.isArray(section.permissions) &&
-        Array.isArray(section.origins)
-        ? String(section.permissions.length + section.origins.length)
-        : undefined;
-    case 'extensionStorage':
-      return isRecord(data.extensionStorage)
-        ? String(Object.keys(asRecord(section.local)).length)
-        : undefined;
-    case 'profile':
-      return isRecord(data.profile) ? '1' : undefined;
-    case 'siteData':
-      return Object.hasOwn(section, 'origins')
-        ? `${Object.keys(asRecord(section.origins)).length} origins`
-        : undefined;
-    default:
-      return Array.isArray(data[cat])
-        ? String((data[cat] as unknown[]).length)
-        : length(section.items);
-  }
-}
-
-function countFor(backup: BackupObject, cat: string): string | undefined {
-  const c = backup.counts || {};
-  const countText = (value: unknown) =>
-    typeof value === 'number' || typeof value === 'string'
-      ? String(value)
-      : undefined;
-  switch (cat) {
-    case 'tabGroups':
-      return countText(c.tabGroups);
-    case 'bookmarks':
-      return countText(c.bookmarks);
-    case 'history':
-      return countText(c.history);
-    case 'tabsWindows':
-      return countText(c.tabs);
-    case 'sessions':
-      return countText(c.recentlyClosedSessions);
-    case 'cookies':
-      return countText(c.cookies);
-    case 'downloads':
-      return countText(c.downloads);
-    case 'readingList':
-      return countText(c.readingList);
-    case 'installedExtensions':
-      return countText(c.installedExtensions);
-    case 'siteData':
-      return c.siteDataOrigins !== undefined
-        ? `${c.siteDataOrigins} origins`
-        : undefined;
-    default:
-      return countText(c[cat]);
-  }
-}
-
-function presentCategories(backup: BackupObject): Array<[string, string]> {
-  const data = asRecord(backup.data);
-  const cats: Array<[string, string]> = [];
-  for (const [cat, label] of Object.entries(CATEGORY_LABELS)) {
-    if (cat === 'tabGroups') {
-      if (Array.isArray(asRecord(data.tabsWindows).tabGroups))
-        cats.push([cat, label]);
-      continue;
-    }
-    if (Object.hasOwn(data, cat)) cats.push([cat, label]);
-  }
-  for (const cat of Object.keys(data))
-    if (!Object.hasOwn(CATEGORY_LABELS, cat)) cats.push([cat, cat]);
-  return cats;
-}
 
 let pendingRestore: {
   validation: ValidationResult;
@@ -1162,17 +1175,21 @@ function renderRestoreSummary() {
 
   const warnings: string[] = [...(validation.warnings || [])];
   const rows: RestoreRow[] = [];
-  for (const [cat, label] of presentCategories(backup)) {
+  for (const [cat, label] of presentRestoreRows(backup.data, CATEGORY_LABELS)) {
     const n = countFromData(backup, cat) ?? countFor(backup, cat);
-    const currentCapability = asRecord(targetCapabilities)[cat] as
+    // Granular rows resolve to their section: restore handler, capability
+    // and archived-capability lookups all use the section key. tabGroups
+    // keeps its own capability key (detect() reports it separately).
+    const section = sectionForRow(cat);
+    const capabilityKey = capabilityKeyForRow(cat);
+    const currentCapability = asRecord(targetCapabilities)[capabilityKey] as
       CapabilityDetail | undefined;
-    const hasRestoreHandler =
-      RESTORE_HANDLED_CATEGORIES.has(cat) || cat === 'tabGroups';
+    const hasRestoreHandler = RESTORE_HANDLED_CATEGORIES.has(section);
     const targetRestore = isRestoreCapability(currentCapability?.canRestore)
       ? currentCapability.canRestore
       : false;
     const r = hasRestoreHandler ? targetRestore : false;
-    const archivedRestore = archivedCapabilities[cat]?.canRestore;
+    const archivedRestore = archivedCapabilities[capabilityKey]?.canRestore;
     if (
       isRestoreCapability(archivedRestore) &&
       archivedRestore !== targetRestore
@@ -1183,14 +1200,18 @@ function renderRestoreSummary() {
     }
     let checked: boolean, disabled: boolean, extraNote: string | undefined;
     if (cat === 'tabGroups') {
-      // Groups are restored together with tabs & windows (same API surface).
-      checked = r !== false;
-      disabled = true;
-      extraNote =
-        r !== false
-          ? 'Restored together with Tabs & windows'
-          : 'This browser cannot restore tab groups.';
-    } else if (!RESTORE_HANDLED_CATEGORIES.has(cat)) {
+      // Tab groups are a real, independent toggle now: the user can restore
+      // them without restoring tabs & windows. Disabled only when the
+      // browser itself cannot restore groups.
+      if (r !== false) {
+        checked = true;
+        disabled = false;
+      } else {
+        checked = false;
+        disabled = true;
+        extraNote = 'This browser cannot restore tab groups.';
+      }
+    } else if (!RESTORE_HANDLED_CATEGORIES.has(section)) {
       checked = false;
       disabled = true;
       extraNote =
@@ -1308,6 +1329,10 @@ async function onRestoreGoUnlocked(): Promise<void> {
           unavailable: row.disabled && row.restore === false,
         };
       }
+      // Section-level synthesis for split sections (tabsWindows, sessions,
+      // cookies, siteData): enabled when any member row is on, plus the
+      // granular map the restore engine pre-filters on.
+      synthesizeSectionOptions(options);
       if (options.bookmarks?.enabled) {
         options.bookmarks = {
           enabled: true,
@@ -1315,8 +1340,13 @@ async function onRestoreGoUnlocked(): Promise<void> {
           confirmDestructive: summary.options.bm,
         };
       }
-      if (options.siteData?.enabled) {
+      // Trigger: any siteData sub-row is on (not the section entry itself).
+      const siteDataSubRowOn = Object.values(
+        options.siteData?.granular ?? {}
+      ).some((on) => on === true);
+      if (siteDataSubRowOn) {
         options.siteData = {
+          ...options.siteData,
           enabled: true,
           mode: summary.options.sd ? 'replace' : 'merge',
           confirmDestructive: summary.options.sd,
@@ -1427,6 +1457,8 @@ export async function clearBackupResults(): Promise<boolean> {
       lastBackupMeta = null;
       lastSiteDataOpts = null;
       lastSiteDataSection = null;
+      siteScanRun = null;
+      void clearSiteScanRecord(chrome.storage?.local ?? null);
       patchState('backup', (backup) => ({
         ...backup,
         visible: false,
@@ -1436,6 +1468,7 @@ export async function clearBackupResults(): Promise<boolean> {
         summary: [],
         foldersNote: null,
         siteScan: null,
+        siteScanMeta: null,
         downloadInfo: { ready: false, siteCount: 0, estBytes: 0 },
       }));
       patchState('restore', (restore) => ({

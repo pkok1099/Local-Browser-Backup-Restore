@@ -99,16 +99,25 @@ export async function saveSiteDataTuning(t: SiteDataTuning): Promise<void> {
 export const BACKUP_CATEGORIES = [
   { id: 'bookmarks', label: 'Bookmarks' },
   { id: 'history', label: 'History' },
-  { id: 'tabsWindows', label: 'Tabs, windows and groups' },
-  { id: 'sessions', label: 'Recently closed tabs and windows' },
-  { id: 'cookies', label: 'Cookies' },
+  { id: 'tabs', label: 'Tabs' },
+  { id: 'windows', label: 'Windows (layout & position)' },
+  { id: 'tabGroups', label: 'Tab groups (name & color)' },
+  { id: 'sessions_tabs', label: 'Recently closed tabs' },
+  { id: 'sessions_windows', label: 'Recently closed windows' },
+  { id: 'cookies_plain', label: 'Cookies (plain)' },
+  { id: 'cookies_partitioned', label: 'Cookies (partitioned)' },
   { id: 'downloads', label: 'Downloads' },
   { id: 'readingList', label: 'Reading list' },
   { id: 'extensionStorage', label: 'Extension storage (this extension)' },
   { id: 'installedExtensions', label: 'Installed extension list' },
   { id: 'extensionPermissions', label: 'Extension permissions' },
   { id: 'profile', label: 'Browser profile metadata' },
-  { id: 'siteData', label: 'Website data (local storage and databases)' },
+  { id: 'siteData_localStorage', label: 'Website data: Local Storage' },
+  { id: 'siteData_indexedDB', label: 'Website data: IndexedDB' },
+  {
+    id: 'siteData_otherStorage',
+    label: 'Website data: Cache, OPFS & Buckets',
+  },
 ] as const;
 
 export type BackupCategoryId = (typeof BACKUP_CATEGORIES)[number]['id'];
@@ -117,14 +126,42 @@ const ALL_CATEGORY_IDS = BACKUP_CATEGORIES.map(
   (category) => category.id
 ) as BackupCategoryId[];
 
+// Legacy coarse IDs (pre-granular format) mapped to their granular
+// replacements. Legacy IDs no longer exist in BACKUP_CATEGORIES, so a single
+// expansion pass handles every case without format detection: legacy IDs
+// expand, granular IDs pass through, and anything unknown is filtered out.
+const GRANULAR_EXPANSION: Record<string, string[]> = {
+  siteData: [
+    'siteData_localStorage',
+    'siteData_indexedDB',
+    'siteData_otherStorage',
+  ],
+  cookies: ['cookies_plain', 'cookies_partitioned'],
+  sessions: ['sessions_tabs', 'sessions_windows'],
+  tabsWindows: ['tabs', 'windows', 'tabGroups'],
+};
+
 export async function loadBackupCategories(): Promise<BackupCategoryId[]> {
   try {
     const stored = await chrome.storage.local.get(BACKUP_CATEGORY_STORAGE_KEY);
     const value = stored[BACKUP_CATEGORY_STORAGE_KEY];
     if (!Array.isArray(value)) return [...ALL_CATEGORY_IDS];
-    return value.filter((id: unknown): id is BackupCategoryId =>
+    const migrated = [
+      ...new Set(
+        value.flatMap((id: unknown) =>
+          typeof id === 'string' && id in GRANULAR_EXPANSION
+            ? GRANULAR_EXPANSION[id]
+            : [id]
+        )
+      ),
+    ].filter((id): id is BackupCategoryId =>
       ALL_CATEGORY_IDS.includes(id as BackupCategoryId)
     );
+    // Persist the migrated shape so the legacy format is stored only once.
+    await chrome.storage.local.set({
+      [BACKUP_CATEGORY_STORAGE_KEY]: migrated,
+    });
+    return migrated;
   } catch (e) {
     return [...ALL_CATEGORY_IDS];
   }

@@ -143,6 +143,13 @@ export type AppState = {
     summary: SummaryLine[];
     foldersNote: string | null;
     siteScan: SiteScanStats | null;
+    // Asal data siteScan: runId/waktu dari snapshot yang dipersist ke
+    // chrome.storage.local (bbr:last-site-scan). null = belum ada snapshot.
+    siteScanMeta: {
+      runId: string;
+      startedAt: number;
+      completedAt: number | null;
+    } | null;
     downloadInfo?: {
       ready: boolean;
       siteCount: number;
@@ -225,6 +232,7 @@ const initialState: AppState = {
     summary: [],
     foldersNote: null,
     siteScan: null,
+    siteScanMeta: null,
   },
   password: { open: false, mode: 'new', error: '' },
   restore: {

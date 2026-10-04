@@ -26,6 +26,13 @@ function metaFromEnvelope(env) {
   };
 }
 
+function countTabsWindowsTabs(tabsWindows) {
+  return (
+    tabsWindows.windows.reduce((a, w) => a + (w.tabs || []).length, 0) +
+    (tabsWindows.tabs || []).length
+  );
+}
+
 function semanticChecks(backup) {
   const warnings = [];
   const counts = backup.counts || {};
@@ -68,10 +75,7 @@ function semanticChecks(backup) {
     );
   }
   if (data.tabsWindows && typeof counts.tabs === 'number') {
-    const t = data.tabsWindows.windows.reduce(
-      (a, w) => a + (w.tabs || []).length,
-      0
-    );
+    const t = countTabsWindowsTabs(data.tabsWindows);
     if (t !== counts.tabs)
       warnings.push(`counts.tabs (${counts.tabs}) does not match data (${t})`);
   }

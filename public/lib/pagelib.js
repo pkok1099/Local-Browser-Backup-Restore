@@ -763,9 +763,12 @@
   }
 
   // ---------- combined read / restore / wipe ----------
-  // opts: { fetchScript: bool, opfs: bool, buckets: bool, sessionStorage: bool, serviceWorkers: bool }
+  // opts: { fetchScript: bool, opfs: bool, buckets: bool, sessionStorage: bool, serviceWorkers: bool,
+  //         localStorage: bool, indexedDB: bool, otherStorage: bool }
   // sessionStorage and serviceWorkers default to true; set false to skip
   // capture entirely (they are not reliably restorable — see restoreSiteData).
+  // localStorage, indexedDB and otherStorage (cacheStorage + OPFS + buckets)
+  // default to true; set false to skip (granular backup categories).
   function recordCategoryReadFailure(out, category, error) {
     out.errors = out.errors || [];
     out.errors.push(`${category}: ${String(error?.message ?? error)}`);
@@ -781,23 +784,42 @@
       if (reportFailure) recordCategoryReadFailure(out, category, error);
     }
   }
-  function readLocalStorageCategory(out) { captureSyncCategory(out, 'localStorage', readLS, {}); }
+  function readLocalStorageCategory(out, opts) {
+    if (opts.localStorage === false) { out.localStorage = {}; out.skipped = (out.skipped || []).concat('localStorage'); return; }
+    captureSyncCategory(out, 'localStorage', readLS, {});
+  }
   function readSessionStorageCategory(out, opts) {
     if (opts.sessionStorage === false) { out.sessionStorage = {}; out.skipped = (out.skipped || []).concat('sessionStorage'); return; }
     captureSyncCategory(out, 'sessionStorage', readSS, {});
   }
-  async function readIndexedDBCategory(out) { await captureAsyncCategory(out, 'indexedDB', () => readIDB(indexedDB), []); }
-  async function readCacheStorageCategory(out) { await captureAsyncCategory(out, 'cacheStorage', () => readCacheStorage(caches), []); }
+  async function readIndexedDBCategory(out, opts) {
+    if (opts.indexedDB === false) { out.indexedDB = []; out.skipped = (out.skipped || []).concat('indexedDB'); return; }
+    await captureAsyncCategory(out, 'indexedDB', () => readIDB(indexedDB), []);
+  }
+  async function readCacheStorageCategory(out, opts) {
+    if (opts.otherStorage === false) { out.cacheStorage = []; out.skipped = (out.skipped || []).concat('cacheStorage'); return; }
+    await captureAsyncCategory(out, 'cacheStorage', () => readCacheStorage(caches), []);
+  }
   async function readServiceWorkerCategory(out, opts) {
     if (opts.serviceWorkers === false) { out.serviceWorkers = []; out.skipped = (out.skipped || []).concat('serviceWorkers'); return; }
     await captureAsyncCategory(out, 'serviceWorkers', () => readSWs(!!opts.fetchScript), []);
   }
   async function readOPFSCategory(out, opts) {
+    if (opts.otherStorage === false) {
+      out.opfs = { files: [], dirs: [] };
+      out.skipped = (out.skipped || []).concat('opfs');
+      return;
+    }
     if (opts.opfs === false || !navigator.storage || !navigator.storage.getDirectory) return;
     await captureAsyncCategory(out, 'opfs', async () => readOPFS(await navigator.storage.getDirectory()),
       (error) => ({ error: String(error), files: [], dirs: [] }), false);
   }
   async function readBucketsCategory(out, opts) {
+    if (opts.otherStorage === false) {
+      out.buckets = { buckets: [] };
+      out.skipped = (out.skipped || []).concat('buckets');
+      return;
+    }
     if (opts.buckets === false || !navigator.storageBuckets) return;
     await captureAsyncCategory(out, 'buckets', () => readBuckets(),
       (error) => ({ error: String(error), buckets: [] }), false);
@@ -806,10 +828,10 @@
     opts = opts || {};
     const out = { origin: location.origin };
     // Each category has an independent read/fallback path, so one failure does not abort later captures.
-    readLocalStorageCategory(out);
+    readLocalStorageCategory(out, opts);
     readSessionStorageCategory(out, opts);
-    await readIndexedDBCategory(out);
-    await readCacheStorageCategory(out);
+    await readIndexedDBCategory(out, opts);
+    await readCacheStorageCategory(out, opts);
     await readServiceWorkerCategory(out, opts);
     await readOPFSCategory(out, opts);
     await readBucketsCategory(out, opts);
