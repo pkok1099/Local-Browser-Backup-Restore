@@ -357,13 +357,13 @@ thin wrapper `cva` + `cn()`. Purely presentational, without business logic.
 ### package.json
 - Contents: `local-browser-backup-extension` v1.4.7, `type: module`, `private: true`.
   Only four runtime dependencies: `wxt`, `@wxt-dev/module-react`, `react`, `react-dom`.
-- Scripts: `dev`/`build`/`zip` (wxt); `test:node` (19 standalone Node scripts); `test:ui`;
-  `test:e2e` (6 E2E scripts); `lint` (eslint src, zero-warning); `typecheck`
-  (tsc + tsconfig.check.json); `format:check`/`format:write` (prettier src/);
-  `check` = lint + typecheck + format:check; `cycles` (madge); `knip`.
+- Scripts: `dev`/`build`/`zip` (wxt); `test` (Node 24 auto-discovers 39 `*.test.mjs`
+  suites at concurrency 7); `test:e2e` (8 `*.e2e.mjs` browser suites); separate `test:ui`;
+  `lint`, `typecheck`, and `format:check`; `verify` prepares WXT and runs those checks
+  plus `npm test` concurrently; `cycles` (madge); `knip`.
 - Key `"prettier"`: printWidth 80, semi, singleQuote, tabWidth 2, trailingComma es5
   (moved from `.prettierrc.json` 2026-10-03; prettier auto-discovery).
-- Note: `npm run check` does not include tests — that is in pre-commit/CI.
+- Note: `npm run check` runs lint, typecheck, and format checks; pre-commit/CI use `npm run verify`.
 
 ### wxt.config.ts
 - Contents: Build configuration WXT + React module + plugin Tailwind (vite). Manifest:
@@ -403,10 +403,10 @@ thin wrapper `cva` + `cn()`. Purely presentational, without business logic.
   Required by the shadcn CLI.
 
 ### .husky/pre-commit + scripts/pre-commit + .github/workflows/check.yml
-- Husky hook: `npm run check` then `npm test` (installed via script `prepare`).
+- Husky hook: `npm run verify` (installed via script `prepare`).
 - `scripts/pre-commit`: manual alternative (`cp scripts/pre-commit .git/hooks/pre-commit`).
-- CI (push/PR, Node 24): `npm ci` → `npx wxt prepare` (required before typecheck) →
-  `npm run check` → `npm test`.
+- CI (push/PR, Node 24): `npm ci` → `npm run verify` (`wxt prepare`, then lint,
+  typecheck, format check, and Node tests run concurrently).
 
 ### scripts/screenshot.mjs
 - Contents: Smoke visual test via Playwright (dashboard desktop 768px + mobile 360px).
@@ -426,38 +426,40 @@ thin wrapper `cva` + `cn()`. Purely presentational, without business logic.
   Prettier — both cover only `src/`.
 - Typecheck: `tsc --noEmit` via `tsconfig.check.json` (TS/TSX only); required
   `npm ci` + `npx wxt prepare` first.
-- Tests: `npm test` = 19 standalone Node scripts (`node:assert/strict`, without a framework);
-  E2E/UI requires built Chromium (`xvfb-run` or `CI_HEADLESS=1`).
-- Quality gate: `npm run check` → pre-commit/CI → `npm test`; `npm run cycles`
+- Tests: `npm test` = Node's auto-discovered `*.test.mjs` suites (`node:test` +
+  `node:assert/strict`); `api-operations.types.ts` remains separately typechecked;
+  E2E/UI uses separate Playwright commands and a fresh Chromium build.
+- Quality gate: `npm run verify` → pre-commit/CI; `npm run cycles`
   (madge) and `npm run knip` for circular-dependency and dead code.
 
 ---
 
-## 4. Unit tests — `tests/*.mjs` (19 files, without a framework)
+## 4. Selected Node test suites — `tests/**/*.test.mjs` (39 suites auto-discovered)
 
-| files | Tests | Visible gaps |
+| file | Tests | Visible gaps |
 |---|---|---|
-| `sitedata-tab-cleanup.mjs` (779 lines, largest) | Pipeline `collectSiteData` real vs. fake Chrome — scenarios A–Q: hard window, takeover user (never closed), adaptive CPU, exactly-once safeCloseTab, retry waves, storage retry, error-group fallback | Mid-crawl stop coverage is limited; cross-session crash recovery is covered only in E2E |
-| `verify-scan-failed.mjs` | Verdict `verifyScanTab`: chrome-error→`failed`, scan→`ours`, user→`foreign`, gone→`gone`, origin empty→marker-only (fix F1, TDD red-first) | Only the `url`, not `pendingUrl` |
-| `runtime-tab-remove-guard.mjs` | Guard runtime `chrome.tabs.remove`: 5 bypass patterns (alias/destructuring/dynamic) rejected + recorded; official close still works | — |
-| `no-raw-tab-remove.mjs` | Static: every `chrome.tabs.remove` must choke point `safeCloseTab` marked SAFETY-ALLOWED; `windows.remove` forbidden | Exotic obfuscation passes (blocked by the runtime guard) |
-| `no-circular-import.mjs` | No circular imports among core modules (to prevent TDZ) | Excludes components/entrypoints; dynamic import not analyzed |
-| `restore-tabs.mjs` | `restoreTabsWindows` + outcome matrix `restoreAll` (ok/partial/failed) | Restore cookies/history/downloads not covered in depth |
-| `restore-tabs-android.mjs` | Path Android: two-phase create-then-navigate | Narrow — dispatch order only |
-| `cloud-backup-characterization.mjs` | `runCloudBackup` `local` provider: durable side-effect ordering | only the `local` provider is covered |
-| `cloud-provider-guard.mjs` | Plaintext-safety `GitHubStorageProvider` vs simulator REST: matrix public/private × plaintext/encrypted; token only in header Authorization | — |
-| `cloud-retry.mjs` | Configuration normalization, backoff delay, cancel/restore alarm | Actual retry execution is only covered in E2E |
-| `schedule-settings.mjs` | Schedule normalization, `isBackupDue`, transfer settings token-safe | Timezone/DST edge cases are not tested |
-| `collect-selection.mjs` | `collectAll` only selected categories; allowlist extensionStorage | Allowlist is hardcoded in the test (requires manual synchronization) |
-| `site-data-origins.mjs` | `discoverOrigins` + origin filtering/selection | — |
-| `site-exclude.mjs` | `isExcluded` — 23 URL cases based hostname parse (anti false-positive) | IPv6 `[::1]` not covered |
-| `site-log.mjs` | `createSiteLogger` + integration `collectSiteData` via `onLogEntry` | IndexedDB persistence is not tested in Node |
-| `pagelib-category-failures.mjs` | `pagelib.js` real in `node:vm` with all storage APIs throwing — each category fails independently | only the all-fail case is covered |
-| `probe-characterization.mjs` | `runProbes` — output shape, failure isolation by category | Locks in behavior, not assessment correctness |
-| `lazy-route-retry.mjs` | `loadRouteChunk`/`retryRouteChunk` — fails once→reload; fails repeatedly→not loop | — |
-| `theme-mode.mjs` | `theme.ts` — boot, persistence, system-follow, without flash | Button interaction in E2E |
-| `extension-ui.mjs` (2069 lines) | Extension BUILD OUTPUT in Chromium: manifest, lazy chunks (JS initial ≤300KiB), layout mobile, settings import/export, restore + password, route-chunk failure | Coverage is shallow per page; business logic remains in unit tests |
+| `sitedata-tab-cleanup.test.mjs` (779 lines, largest) | Pipeline `collectSiteData` real vs. fake Chrome — scenarios A–Q: hard window, takeover user (never closed), adaptive CPU, exactly-once safeCloseTab, retry waves, storage retry, error-group fallback | Mid-crawl stop coverage is limited; cross-session crash recovery is covered only in E2E |
+| `verify-scan-failed.test.mjs` | Verdict `verifyScanTab`: chrome-error→`failed`, scan→`ours`, user→`foreign`, gone→`gone`, origin empty→marker-only (fix F1, TDD red-first) | Only the `url`, not `pendingUrl` |
+| `runtime-tab-remove-guard.test.mjs` | Guard runtime `chrome.tabs.remove`: 5 bypass patterns (alias/destructuring/dynamic) rejected + recorded; official close still works | — |
+| `no-raw-tab-remove.test.mjs` | Static: every `chrome.tabs.remove` must choke point `safeCloseTab` marked SAFETY-ALLOWED; `windows.remove` forbidden | Exotic obfuscation passes (blocked by the runtime guard) |
+| `no-circular-import.test.mjs` | No circular imports among core modules (to prevent TDZ) | Excludes components/entrypoints; dynamic import not analyzed |
+| `restore-tabs.test.mjs` | `restoreTabsWindows` + outcome matrix `restoreAll` (ok/partial/failed) | Restore cookies/history/downloads not covered in depth |
+| `restore-tabs-android.test.mjs` | Path Android: two-phase create-then-navigate | Narrow — dispatch order only |
+| `cloud-backup-characterization.test.mjs` | `runCloudBackup` `local` provider: durable side-effect ordering | only the `local` provider is covered |
+| `cloud-provider-guard.test.mjs` | Plaintext-safety `GitHubStorageProvider` vs simulator REST: matrix public/private × plaintext/encrypted; token only in header Authorization | — |
+| `cloud-retry.test.mjs` | Configuration normalization, backoff delay, cancel/restore alarm | Actual retry execution is only covered in E2E |
+| `schedule-settings.test.mjs` | Schedule normalization, `isBackupDue`, transfer settings token-safe | Timezone/DST edge cases are not tested |
+| `collect-selection.test.mjs` | `collectAll` only selected categories; allowlist extensionStorage | Allowlist is hardcoded in the test (requires manual synchronization) |
+| `site-data-origins.test.mjs` | `discoverOrigins` + origin filtering/selection | — |
+| `site-exclude.test.mjs` | `isExcluded` — 23 URL cases based hostname parse (anti false-positive) | IPv6 `[::1]` not covered |
+| `site-log.test.mjs` | `createSiteLogger` + integration `collectSiteData` via `onLogEntry` | IndexedDB persistence is not tested in Node |
+| `pagelib-category-failures.test.mjs` | `pagelib.js` real in `node:vm` with all storage APIs throwing — each category fails independently | only the all-fail case is covered |
+| `probe-characterization.test.mjs` | `runProbes` — output shape, failure isolation by category | Locks in behavior, not assessment correctness |
+| `lazy-route-retry.test.mjs` | `loadRouteChunk`/`retryRouteChunk` — fails once→reload; fails repeatedly→not loop | — |
+| `theme-mode.test.mjs` | `theme.ts` — boot, persistence, system-follow, without flash | Button interaction in E2E |
 | `api-operations.types.ts` | Typecheck `runCloudBackup`/`runIfDue` via `@ts-expect-error` | By design, with no runtime assertions |
+
+The Playwright UI smoke test, `tests/extension-ui.mjs`, is separate; the type-only suite remains part of `npm run typecheck`.
 
 **Coverage summary:** Strongest — tab safety (4 layers), pipeline site-data
 (scenarios A–Q), guard plaintext provider, token hygiene. Weakest — `crypto.js`
@@ -467,23 +469,26 @@ unit-test coverage.
 
 ---
 
-## 5. E2E — `tests/e2e/` (8 files) and `docs/`
+## 5. Playwright UI and E2E — `tests/e2e/` (8 suites) and `docs/`
 
-E2E runs `npm run build` first, then `xvfb-run -a npm run test:e2e`
-(or `CI_HEADLESS=1`). Sequence: local → cloud → scheduler → sitedata-tabs →
-sitedata-error-tabs → theme-toggle, all through the real built extension in
-Chromium Playwright (`launch.mjs` + `window.__api`).
+Build a fresh extension with `npm run build`, then run `xvfb-run -a npm run test:e2e`
+(or `CI_HEADLESS=1`). The `*.e2e.mjs` suffix keeps all eight browser suites outside
+Node's default test discovery. They drive the built extension in Chromium through
+Playwright (`launch.mjs` + `window.__api`). The UI smoke test is separate as `npm run test:ui`.
 
 | files | Contents |
 |---|---|
 | `launch.mjs` | Shared launcher: load extension, wait for `window.__api`, `apiCall`/`must`, collect `pageErrors` |
 | `seeds.mjs` / `github-simulator.mjs` | Bookmark-seeding helper; simulator REST GitHub in-memory (fault injection, audit hygiene token) |
-| `local-roundtrip.mjs` | Seed → backup encrypted → destroy → password wrong rejected → restore exactly → idempotent |
-| `cloud-roundtrip.mjs` | Cloud cycle vs simulator: upload verified, manifest, digest-mismatch rejected, HTTP 500 → retry sync the same artifact, matrix public/private × plaintext/encrypted |
-| `scheduler-roundtrip.mjs` | Due/catch-up → execution → dedup `already-succeeded-today` → disabled not due → rejected without a password |
-| `sitedata-tabs.mjs` | Pipeline streaming: hard window never exceeded (polling live), tab pre-existing used but untouched, progress monotonic, clean teardown |
-| `sitedata-error-tabs.mjs` | 2 origin run + 3 broken (closed port, DNS `.invalid`): tab count after == before, without marker/ID new/chrome-error, both groups disappear |
-| `theme-toggle.mjs` | Dark mode: cycle light→dark→system, persists after reload |
+| `local-roundtrip.e2e.mjs` | Seed → encrypted backup → destroy → wrong password rejected → exact restore → idempotence |
+| `cloud-roundtrip.e2e.mjs` | Cloud cycle vs simulator: verified upload, manifest, digest mismatch, HTTP 500 retry of the same artifact, and public/private × plaintext/encrypted matrix |
+| `scheduler-roundtrip.e2e.mjs` | Due/catch-up → execution → dedup `already-succeeded-today` → disabled not due → rejected without a password |
+| `sitedata-tabs.e2e.mjs` | Streaming pipeline: hard window never exceeded, existing tabs untouched, monotonic progress, clean teardown |
+| `sitedata-error-tabs.e2e.mjs` | Working and deliberately failing origins: temporary tabs and scan/error groups are cleaned up |
+| `sitedata-blocking.e2e.mjs` | Blocks subresources during scan while site storage is read; verifies redirect cleanup and session-rule removal |
+| `cookies-partitioned.e2e.mjs` | Preserves the partition key while backing up a plain cookie and a partitioned CHIPS cookie |
+| `theme-toggle.e2e.mjs` | Dark mode: cycle light → dark → system, persists after reload |
+| `tests/extension-ui.mjs` | Separate Playwright UI smoke test: Chromium load, dashboard layout, and mobile viewport |
 
 Most important documents for auditors: `docs/PERMISSIONS.md` (mapping permissions→features),
 `docs/CAPABILITY_REPORT.md` (fidelity claims + evidence + irreparable limitations),

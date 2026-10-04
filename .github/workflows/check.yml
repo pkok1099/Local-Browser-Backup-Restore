@@ -11,6 +11,4 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci
-      - run: npm exec -- wxt prepare
-      - run: npm run check
-      - run: npm test
+      - run: npm run verify

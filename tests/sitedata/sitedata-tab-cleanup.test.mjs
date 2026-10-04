@@ -518,16 +518,19 @@ const {
     highMs: 60,
     onAdjust: (reason) => adjustments.push(reason),
   });
-  await waitFor(() => window === 10, 'halve 20 -> 10');
-  await waitFor(() => window === 5, 'halve 10 -> 5');
-  await waitFor(() => window === 2, 'halve 5 -> 2 (floor)');
-  await sleep(150);
-  assert.equal(window, 2, `window must hold at the floor of 2, got ${window}`);
-  assert.ok(
-    adjustments.length >= 3,
-    'each halving should be reported, got: ' + JSON.stringify(adjustments)
-  );
-  mon.stop();
+  try {
+    await waitFor(() => window === 10, 'halve 20 -> 10');
+    await waitFor(() => window === 5, 'halve 10 -> 5');
+    await waitFor(() => window === 2, 'halve 5 -> 2 (floor)');
+    await sleep(150);
+    assert.equal(window, 2, `window must hold at the floor of 2, got ${window}`);
+    assert.ok(
+      adjustments.length >= 3,
+      'each halving should be reported, got: ' + JSON.stringify(adjustments)
+    );
+  } finally {
+    mon.stop();
+  }
   // Rise phase: <70% for ~15s -> +2 per step, capped at the UI setting.
   let w2 = 2;
   const mon2 = startCpuMonitor({
@@ -540,12 +543,15 @@ const {
     sampleMs: 5,
     onAdjust: () => {},
   });
-  await waitFor(() => w2 === 4, 'grow 2 -> 4');
-  await waitFor(() => w2 === 6, 'grow 4 -> 6');
-  await waitFor(() => w2 === 8, 'grow 6 -> 8');
-  await sleep(150);
-  assert.equal(w2, 8, `window must never exceed the UI setting, got ${w2}`);
-  mon2.stop();
+  try {
+    await waitFor(() => w2 === 4, 'grow 2 -> 4');
+    await waitFor(() => w2 === 6, 'grow 4 -> 6');
+    await waitFor(() => w2 === 8, 'grow 6 -> 8');
+    await sleep(150);
+    assert.equal(w2, 8, `window must never exceed the UI setting, got ${w2}`);
+  } finally {
+    mon2.stop();
+  }
   console.log(
     'PASS scenario D: adaptive CPU window halves fast, grows slow, respects cap and floor'
   );
@@ -843,12 +849,15 @@ const {
       await sleep(5);
     }
   };
-  await waitFor(() => window === 10, 'load-degraded halve 20 -> 10');
-  assert.ok(
-    adjustments.some((r) => r.includes('tab load degraded')),
-    'the shrink must name the load signal, got: ' + JSON.stringify(adjustments)
-  );
-  mon.stop();
+  try {
+    await waitFor(() => window === 10, 'load-degraded halve 20 -> 10');
+    assert.ok(
+      adjustments.some((r) => r.includes('tab load degraded')),
+      'the shrink must name the load signal, got: ' + JSON.stringify(adjustments)
+    );
+  } finally {
+    mon.stop();
+  }
 
   // (2) pool discipline
   const violations = [];

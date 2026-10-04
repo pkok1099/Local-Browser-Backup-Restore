@@ -2,11 +2,11 @@
 
 ## Commands
 - Run `npm ci`, then `npm run build`; the output goes to `.output/chrome-mv3/` (load unpacked for manual installation).
-- `npm run check` runs `lint`, `typecheck`, and `format:check`. CI and pre-commit (husky) run `npm run check` followed by `npm test`; do not make changes that break them.
-- `npm test` runs only the Node suite (`test:node`): each `tests/*.mjs` file is a standalone Node script (without a framework), so run an individual test directly with `node tests/<nama>.mjs`.
-- E2E/UI tests require Chromium: `export CHROMIUM_PATH=/path/to/chrome` (or `npx playwright install chromium`) and a display — use `xvfb-run -a npm run test:e2e` / `npm run test:ui`, or `CI_HEADLESS=1`. E2E always runs `npm run build` first.
-- Use `npm run cycles` (madge) to find circular imports and `npm run knip` to find dead code (entries: `src/entrypoints/**`, `src/dashboard/theme.ts`, `tests/**/*.mjs`).
-- Release: push tag `vX.Y.Z` (it must match the `package.json` version) → workflow `.github/workflows/release.yml` runs check + unit test + build + `wxt zip`, then creates a GitHub Release containing the zip (always) and CRX (only when the `CRX_PRIVATE_KEY` secret is set — it must be a PEM private key matching the `key` pinned in `wxt.config.ts`, verified in CI; without the secret, the release contains only the zip).
+- `npm run check` runs `lint`, `typecheck`, and `format:check`. Prefer `npm run verify`: it runs `wxt prepare` first, then runs `lint`, `typecheck`, `format:check`, and `npm test` concurrently. CI and pre-commit use this pipeline; failures are collected, labeled, and returned as a nonzero exit.
+- `npm test` uses Node 24's built-in `node --test --test-concurrency=7` auto-discovery for `tests/**/*.test.mjs`. Filter normally with `node --test tests/cloud/*.test.mjs` or a specific `*.test.mjs` path. `tests/api-operations.types.ts` remains a separate part of `npm run typecheck`.
+- Browser suites use `tests/e2e/*.e2e.mjs`; helpers and `tests/extension-ui.mjs` are not discovered by `npm test`. Playwright requires a fresh `npm run build`, Chromium (`export CHROMIUM_PATH=/path/to/chrome` or `npx playwright install chromium`), and a display — use `xvfb-run -a npm run test:e2e` / `npm run test:ui`, or `CI_HEADLESS=1`.
+- Use `npm run cycles` (madge) to find circular imports and `npm run knip` to find dead code (entries: `src/entrypoints/**`, `src/dashboard/theme.ts`, and `tests/**/*.mjs`).
+- Release: push tag `vX.Y.Z` (it must match the `package.json` version) → workflow `.github/workflows/release.yml` runs `verify` + `wxt zip` (which builds the production output), then creates a GitHub Release containing the zip (always) and CRX (only when the `CRX_PRIVATE_KEY` secret is set — it must be a PEM private key matching the `key` pinned in `wxt.config.ts`, verified in CI; without the secret, the release contains only the zip).
 
 ## Architecture
 - The service worker (`src/entrypoints/background.ts`) is intentionally minimal and handles only scheduling and alarms. All heavy backup/restore work runs on the dashboard page so the MV3 worker lifecycle does not terminate operations. There is no popup — the toolbar action opens `dashboard.html` as a tab (Android-friendly).
@@ -18,7 +18,7 @@
 ## Tab safety (hard rules)
 - `chrome.tabs.remove` may only be called inside `safeCloseTab` (`src/lib/tab-ownership.js`, marked `SAFETY-ALLOWED`), based on the `ownedTabIds` registry plus verification that the tab URL still carries the scan marker. Never close tabs based on a query or group membership.
 - `chrome.windows.remove` is prohibited everywhere. Scan groups are allowed to disappear on their own when their last tab is closed.
-- These protections are enforced in layers: `tests/no-raw-tab-remove.mjs` (static, including dynamic access via `chrome.tabs["remove"]`), `tests/runtime-tab-remove-guard.mjs` (runtime), and the ESLint `no-restricted-syntax` rule (disabled specifically in `sitedata.js` because tests check the `SAFETY-ALLOWED` marker).
+- These protections are enforced in layers: `tests/safety/no-raw-tab-remove.test.mjs` (static, including dynamic access via `chrome.tabs["remove"]`), `tests/sitedata/runtime-tab-remove-guard.test.mjs` (runtime), and the ESLint `no-restricted-syntax` rule (disabled specifically in `sitedata.js` because tests check the `SAFETY-ALLOWED` marker).
 - Do not delete browser/user data or perform broad storage cleanup.
 
 ## Other security
@@ -33,7 +33,7 @@
 - `no-await-in-loop` is disabled (sequential await is intentional); `require-atomic-updates` is disabled (false positive, no shared-memory concurrency).
 
 ## Test conventions
-- Write Node tests as standalone scripts using `node:assert/strict` that fail via exit code; add them to the `test:node` chain in `package.json`.
+- Write unit/integration suites with Node's `node:test` (`describe`/`it`) and `node:assert/strict`, named `*.test.mjs` in the existing domain folders so `node --test` discovers them. Keep browser suites named `*.e2e.mjs` and the extension UI script separate from default auto-discovery.
 - E2E conventions (`docs/E2E.md`): reuse `launchDashboard()` + `apiCall()` from `tests/e2e/launch.mjs`; restore requires explicit category options (`options: { bookmarks: { enabled: true } }`) because restore is disabled by default; clear `chrome.storage.session` (`bbr:session-pw`) before testing behavior without a password; end every browser test with an assertion that there are zero `pageErrors`.
 - A sandbox that blocks top-level navigation to a local origin (Chrome Local Network Access) cannot assert site-data storage contents — this is an environment limitation, not a bug.
 

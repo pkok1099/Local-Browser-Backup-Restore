@@ -135,7 +135,7 @@ Note: `notes` in this section is always an array (see `notes[]` in sitedata.js).
 ## Tasks (TDD red-green-refactor)
 
 ### T1: module + tests
-Cases in `tests/site-incremental.mjs` (15):
+Cases in `tests/sitedata/site-incremental.test.mjs` (15):
 1. no cache → full (`no-cache`)
 2. corrupt cache / not an object → full, without throwing (#1 user)
 3. version mismatch → full (`version-mismatch`) (#2 user)
@@ -154,7 +154,7 @@ Cases in `tests/site-incremental.mjs` (15):
 15. read/write round-trip valid
 + case: empty included → no-op.
 - Start with a failing test, implement the minimum, make it pass, then refactor.
-- Register it in `package.json` under `test:node`.
+- Name it `*.test.mjs` in the existing domain folder so Node's `node --test` auto-discovers it.
 
 ### T2: glue (logic.ts + cloud-ui.ts)
 - `CollectOptions += incrementalSiteData?: boolean`; import the module; glue (a)+(b);
@@ -163,7 +163,7 @@ Cases in `tests/site-incremental.mjs` (15):
   this is documented and covered by the fully tested module plus existing E2E tests.
 
 ### T3: verification + manual smoke test
-- `node tests/site-incremental.mjs`, `npm run check`, `npm test`,
+- `node --test tests/sitedata/site-incremental.test.mjs`, `npm run check`, `npm test`,
   `npm run test:e2e` passes.
 - Self-review: flag off causes no diffusion; tab ownership remains untouched; no circular import.
 - Manual smoke test (user):

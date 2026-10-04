@@ -41,10 +41,7 @@ jobs:
           echo "version=$PKG" >> "$GITHUB_ENV"
 
       - run: npm ci
-      - run: npm exec -- wxt prepare
-      - run: npm run check
-      - run: npm test
-      - run: npm run build
+      - run: npm run verify
       - run: npm run zip
 
       - name: Pack CRX (signed)

@@ -27,20 +27,25 @@ const envelope = {
 // Must reject fast: race against a timeout — without the guard, PBKDF2 with
 // ~1e9 iterations would never settle (the shell `timeout` around this script
 // proves the red state by killing the hang).
-const timeout = new Promise((_, reject) =>
-  setTimeout(
+let timeoutHandle;
+const timeout = new Promise((_, reject) => {
+  timeoutHandle = setTimeout(
     () =>
       reject(
         new Error('decrypt did not reject in time — KDF ran before validation')
       ),
     5000
-  )
-);
-await assert.rejects(
-  Promise.race([decryptBackup(envelope, 'password'), timeout]),
-  (e) => e && e.code === 'ERR_MALFORMED_ENVELOPE',
-  'absurd kdf.iterations should throw ERR_MALFORMED_ENVELOPE before key derivation'
-);
+  );
+});
+try {
+  await assert.rejects(
+    Promise.race([decryptBackup(envelope, 'password'), timeout]),
+    (e) => e && e.code === 'ERR_MALFORMED_ENVELOPE',
+    'absurd kdf.iterations should throw ERR_MALFORMED_ENVELOPE before key derivation'
+  );
+} finally {
+  clearTimeout(timeoutHandle);
+}
 
 // Boundary: iterations exactly at the cap pass validation (they then fail
 // GCM auth with ERR_DECRYPT_FAILED — the expensive KDF is bounded).

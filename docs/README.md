@@ -89,7 +89,7 @@ src/
     ui/                    ← shadcn/ui components (button, card, select, checkbox, etc.)
     dashboard/             ← dashboard feature cards (React + Tailwind)
 public/lib/pagelib.js      ← copied unchanged to the build root (used by chrome.scripting)
-tests/                     ← cloud-retry.mjs, schedule-settings.mjs (Node) + extension-ui.mjs (Playwright)
+tests/                     ← Node node:test suites plus separate Playwright UI/E2E tests
 docs/                      ← complete documentation + feature specifications
 .output/chrome-mv3/        ← output of `npm run build` (folder loaded as an unpacked extension)
 ```
@@ -106,8 +106,10 @@ npm run dev          # dev mode (auto-reload, load unpacked from .output/chrome-
 npm run build        # production build → .output/chrome-mv3
 npm run zip          # zip package ready for publishing
 npm run compile      # TypeScript typecheck (tsc --noEmit)
-npm test             # Node tests: retry, schedule, restore tabs and backup/site selection
-npm run test:ui      # Playwright UI tests against the actual build (requires Chromium + X server)
+npm test             # Node 24 auto-discovers tests/**/*.test.mjs (concurrency 7)
+npm run verify       # WXT prepare, then lint + typecheck + format check + npm test in parallel
+npm run test:e2e     # Playwright browser suites (*.e2e.mjs), after a fresh build
+npm run test:ui      # Separate Playwright UI smoke test, after a fresh build
 ```
 
 The v1.4.0 migration preserves backup format v2, the StorageProvider contract, public/private encryption policies, daily/weekly scheduling, exponential retries, and token-safe settings transfer. The core logic (`src/lib/*.js`) is identical to v1.3.0, so older backups can still be opened.
@@ -132,7 +134,7 @@ The v1.4.0 migration preserves backup format v2, the StorageProvider contract, p
 - `docs/CAPABILITY_REPORT.md` — Read/Backup/Restore matrix by category + runtime evidence + API limitations.
 - `docs/TEST_RESULTS.md` — results of automated tests A–G in Chrome 131.
 - `tests/extension-ui.mjs` — Playwright smoke test for the mobile dashboard and loading the MV3 extension in Chromium.
-- Run unit tests: `npm test`. Run Chromium Playwright tests: `npm ci`, `npx playwright install chromium`, then `xvfb-run -a npm run test:ui` on headless Linux.
+- Run unit/integration tests: `npm test` (or `npm run verify` for checks plus tests). Node's normal CLI can filter them, for example `node --test tests/cloud/*.test.mjs` or `node --test tests/cloud/cloud-retry.test.mjs`. For Playwright tests, first run `npm run build`, then install Chromium with `npx playwright install chromium` and use `xvfb-run -a npm run test:ui` or `xvfb-run -a npm run test:e2e` on headless Linux.
 
 ---
 
