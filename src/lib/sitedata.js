@@ -465,11 +465,11 @@ async function readPartitions(progress, includedTopOrigins = null) {
       });
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id, allFrames: true },
-        func: () => {
+        func: async () => {
           try {
             if (window.top === window) return { mainFrame: true };
             if (!globalThis.__BBR) return { error: 'pagelib missing' };
-            return (async () => {
+            return await (async () => {
               const r = await __BBR.readSiteAll({
                 fetchScript: false,
                 opfs: false,

@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -40,9 +42,12 @@ jobs:
           fi
           echo "version=$PKG" >> "$GITHUB_ENV"
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run verify
       - run: npm run zip
+
+      - name: Install CRX packer
+        run: npm install --no-save --no-audit --no-fund --ignore-scripts crx3@2.0.0
 
       - name: Pack CRX (signed)
         env:
@@ -53,7 +58,6 @@ jobs:
             exit 0
           fi
           set -euo pipefail
-          npm install --no-save --no-audit --no-fund crx3@2.0.0
           printf '%s' "$CRX_PRIVATE_KEY" > /tmp/crx-key.pem
           chmod 600 /tmp/crx-key.pem
           # The signing key must match the pinned manifest key (fixed extension
@@ -72,7 +76,7 @@ jobs:
           ls -la ./*.crx
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             .output/*.zip
